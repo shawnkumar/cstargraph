@@ -22,6 +22,7 @@ import java.net.Socket;
 import java.net.SocketException;
 
 import org.apache.cassandra.stress.settings.StressSettings;
+import org.apache.cassandra.stress.util.MultiPrintStream;
 
 public final class Stress
 {
@@ -64,7 +65,10 @@ public final class Stress
             return;
         }
 
-        PrintStream logout = settings.log.getOutput();
+        MultiPrintStream logout = settings.log.getOutput();
+        if (settings.graph.inGraphMode()) {
+            logout.addStream(new PrintStream(settings.graph.temporaryLogFile));
+        }
 
         if (settings.sendToDaemon != null)
         {
