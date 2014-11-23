@@ -26,12 +26,10 @@ import com.google.common.base.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.cql3.*;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.composites.Composite;
 import org.apache.cassandra.db.marshal.AbstractType;
-import org.apache.cassandra.db.marshal.CompositeType;
 import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.db.marshal.TypeParser;
 import org.apache.cassandra.exceptions.*;
@@ -40,7 +38,7 @@ import org.apache.cassandra.utils.FBUtilities;
 /**
  * Base class for User Defined Functions.
  */
-public abstract class UDFunction extends AbstractFunction
+public abstract class UDFunction extends AbstractFunction implements ScalarFunction
 {
     protected static final Logger logger = LoggerFactory.getLogger(UDFunction.class);
 
@@ -59,10 +57,16 @@ public abstract class UDFunction extends AbstractFunction
                          boolean deterministic)
     {
         super(name, argTypes, returnType);
+        assert new HashSet<>(argNames).size() == argNames.size() : "duplicate argument names";
         this.argNames = argNames;
         this.language = language;
         this.body = body;
         this.deterministic = deterministic;
+    }
+
+    public boolean isAggregate()
+    {
+        return false;
     }
 
     public static UDFunction create(FunctionName name,
@@ -76,9 +80,8 @@ public abstract class UDFunction extends AbstractFunction
     {
         switch (language)
         {
-            case "class": return new ReflectionBasedUDF(name, argNames, argTypes, returnType, language, body, deterministic);
             case "java": return JavaSourceUDFFactory.buildUDF(name, argNames, argTypes, returnType, body, deterministic);
-            default: throw new InvalidRequestException(String.format("Invalid language %s for '%s'", language, name));
+            default: return new ScriptBasedUDF(name, argNames, argTypes, returnType, language, body, deterministic);
         }
     }
 
@@ -148,16 +151,16 @@ public abstract class UDFunction extends AbstractFunction
 
     private static Mutation makeSchemaMutation(FunctionName name)
     {
-        CompositeType kv = (CompositeType)CFMetaData.SchemaFunctionsCf.getKeyValidator();
-        return new Mutation(Keyspace.SYSTEM_KS, kv.decompose(name.namespace, name.name));
+        UTF8Type kv = (UTF8Type)SystemKeyspace.SchemaFunctionsTable.getKeyValidator();
+        return new Mutation(SystemKeyspace.NAME, kv.decompose(name.keyspace));
     }
 
     public Mutation toSchemaDrop(long timestamp)
     {
         Mutation mutation = makeSchemaMutation(name);
-        ColumnFamily cf = mutation.addOrGet(SystemKeyspace.SCHEMA_FUNCTIONS_CF);
+        ColumnFamily cf = mutation.addOrGet(SystemKeyspace.SCHEMA_FUNCTIONS_TABLE);
 
-        Composite prefix = CFMetaData.SchemaFunctionsCf.comparator.make(computeSignature(argTypes));
+        Composite prefix = SystemKeyspace.SchemaFunctionsTable.comparator.make(name.name, computeSignature(argTypes));
         int ldt = (int) (System.currentTimeMillis() / 1000);
         cf.addAtom(new RangeTombstone(prefix, prefix.end(), timestamp, ldt));
 
@@ -167,9 +170,9 @@ public abstract class UDFunction extends AbstractFunction
     public Mutation toSchemaUpdate(long timestamp)
     {
         Mutation mutation = makeSchemaMutation(name);
-        ColumnFamily cf = mutation.addOrGet(SystemKeyspace.SCHEMA_FUNCTIONS_CF);
+        ColumnFamily cf = mutation.addOrGet(SystemKeyspace.SCHEMA_FUNCTIONS_TABLE);
 
-        Composite prefix = CFMetaData.SchemaFunctionsCf.comparator.make(computeSignature(argTypes));
+        Composite prefix = SystemKeyspace.SchemaFunctionsTable.comparator.make(name.name, computeSignature(argTypes));
         CFRowAdder adder = new CFRowAdder(cf, prefix, timestamp);
 
         adder.resetCollection("argument_names");
@@ -190,9 +193,9 @@ public abstract class UDFunction extends AbstractFunction
 
     public static UDFunction fromSchema(UntypedResultSet.Row row)
     {
-        String namespace = row.getString("namespace");
-        String fname = row.getString("name");
-        FunctionName name = new FunctionName(namespace, fname);
+        String ksName = row.getString("keyspace_name");
+        String functionName = row.getString("function_name");
+        FunctionName name = new FunctionName(ksName, functionName);
 
         List<String> names = row.getList("argument_names", UTF8Type.instance);
         List<String> types = row.getList("argument_types", UTF8Type.instance);
@@ -247,12 +250,12 @@ public abstract class UDFunction extends AbstractFunction
         }
     }
 
-    public static Map<ByteBuffer, UDFunction> fromSchema(Row row)
+    public static Map<Composite, UDFunction> fromSchema(Row row)
     {
-        UntypedResultSet results = QueryProcessor.resultify("SELECT * FROM system." + SystemKeyspace.SCHEMA_FUNCTIONS_CF, row);
-        Map<ByteBuffer, UDFunction> udfs = new HashMap<>(results.size());
+        UntypedResultSet results = QueryProcessor.resultify("SELECT * FROM system." + SystemKeyspace.SCHEMA_FUNCTIONS_TABLE, row);
+        Map<Composite, UDFunction> udfs = new HashMap<>(results.size());
         for (UntypedResultSet.Row result : results)
-            udfs.put(result.getBlob("signature"), fromSchema(result));
+            udfs.put(SystemKeyspace.SchemaFunctionsTable.comparator.make(result.getString("function_name"), result.getBlob("signature")), fromSchema(result));
         return udfs;
     }
 

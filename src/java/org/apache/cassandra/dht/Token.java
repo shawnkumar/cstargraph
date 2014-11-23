@@ -30,53 +30,18 @@ import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
-public abstract class Token<T> implements RingPosition<Token<T>>, Serializable
+public abstract class Token implements RingPosition<Token>, Serializable
 {
     private static final long serialVersionUID = 1L;
 
     public static final TokenSerializer serializer = new TokenSerializer();
 
-    public final T token;
-
-    protected Token(T token)
+    public static abstract class TokenFactory
     {
-        this.token = token;
-    }
-
-    /**
-     * This determines the comparison for node destination purposes.
-     */
-    abstract public int compareTo(Token<T> o);
-
-    @Override
-    public String toString()
-    {
-        return token.toString();
-    }
-
-    @Override
-    public boolean equals(Object obj)
-    {
-        if (this == obj)
-            return true;
-        if (obj == null || this.getClass() != obj.getClass())
-            return false;
-
-        return token.equals(((Token<T>)obj).token);
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return token.hashCode();
-    }
-
-    public static abstract class TokenFactory<T>
-    {
-        public abstract ByteBuffer toByteArray(Token<T> token);
-        public abstract Token<T> fromByteArray(ByteBuffer bytes);
-        public abstract String toString(Token<T> token); // serialize as string, not necessarily human-readable
-        public abstract Token<T> fromString(String string); // deserialize
+        public abstract ByteBuffer toByteArray(Token token);
+        public abstract Token fromByteArray(ByteBuffer bytes);
+        public abstract String toString(Token token); // serialize as string, not necessarily human-readable
+        public abstract Token fromString(String string); // deserialize
 
         public abstract void validate(String token) throws ConfigurationException;
     }
@@ -107,19 +72,23 @@ public abstract class Token<T> implements RingPosition<Token<T>>, Serializable
         }
     }
 
-    public Token<T> getToken()
+    abstract public IPartitioner getPartitioner();
+    abstract public long getHeapSize();
+    abstract public Object getTokenValue();
+
+    public Token getToken()
     {
         return this;
     }
 
-    public boolean isMinimum(IPartitioner partitioner)
+    public Token minValue()
     {
-        return this.equals(partitioner.getMinimumToken());
+        return getPartitioner().getMinimumToken();
     }
 
     public boolean isMinimum()
     {
-        return isMinimum(StorageService.getPartitioner());
+        return this.equals(minValue());
     }
 
     /*
@@ -136,17 +105,12 @@ public abstract class Token<T> implements RingPosition<Token<T>>, Serializable
      * Note that those are "fake" keys and should only be used for comparison
      * of other keys, for selection of keys when only a token is known.
      */
-    public KeyBound minKeyBound(IPartitioner partitioner)
+    public KeyBound minKeyBound()
     {
         return new KeyBound(this, true);
     }
 
-    public KeyBound minKeyBound()
-    {
-        return minKeyBound(null);
-    }
-
-    public KeyBound maxKeyBound(IPartitioner partitioner)
+    public KeyBound maxKeyBound()
     {
         /*
          * For each token, we needs both minKeyBound and maxKeyBound
@@ -155,17 +119,13 @@ public abstract class Token<T> implements RingPosition<Token<T>>, Serializable
          * simpler to associate the same value for minKeyBound and
          * maxKeyBound for the minimun token.
          */
-        if (isMinimum(partitioner))
+        if (isMinimum())
             return minKeyBound();
         return new KeyBound(this, false);
     }
 
-    public KeyBound maxKeyBound()
-    {
-        return maxKeyBound(StorageService.getPartitioner());
-    }
-
-    public <R extends RingPosition> R upperBound(Class<R> klass)
+    @SuppressWarnings("unchecked")
+    public <R extends RingPosition<R>> R upperBound(Class<R> klass)
     {
         if (klass.equals(getClass()))
             return (R)this;
@@ -204,14 +164,19 @@ public abstract class Token<T> implements RingPosition<Token<T>>, Serializable
                 return ((pos instanceof KeyBound) && !((KeyBound)pos).isMinimumBound) ? 0 : 1;
         }
 
-        public boolean isMinimum(IPartitioner partitioner)
+        public IPartitioner getPartitioner()
         {
-            return getToken().isMinimum(partitioner);
+            return getToken().getPartitioner();
+        }
+
+        public KeyBound minValue()
+        {
+            return getPartitioner().getMinimumToken().minKeyBound();
         }
 
         public boolean isMinimum()
         {
-            return isMinimum(StorageService.getPartitioner());
+            return getToken().isMinimum();
         }
 
         public RowPosition.Kind kind()

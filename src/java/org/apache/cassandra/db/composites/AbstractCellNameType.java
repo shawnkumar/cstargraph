@@ -184,6 +184,7 @@ public abstract class AbstractCellNameType extends AbstractCType implements Cell
 
     public CellName cellFromByteBuffer(ByteBuffer bytes)
     {
+        // we're not guaranteed to get a CellName back from fromByteBuffer(), so it's on the caller to guarantee this
         return (CellName)fromByteBuffer(bytes);
     }
 
@@ -303,7 +304,7 @@ public abstract class AbstractCellNameType extends AbstractCType implements Cell
                         return cell;
                     }
 
-                    public List<Cell> getCollection(ColumnIdentifier name)
+                    public List<Cell> getMultiCellColumn(ColumnIdentifier name)
                     {
                         return null;
                     }
@@ -445,7 +446,7 @@ public abstract class AbstractCellNameType extends AbstractCType implements Cell
             return columns == null ? null : columns.get(name);
         }
 
-        public List<Cell> getCollection(ColumnIdentifier name)
+        public List<Cell> getMultiCellColumn(ColumnIdentifier name)
         {
             return collections == null ? null : collections.get(name);
         }

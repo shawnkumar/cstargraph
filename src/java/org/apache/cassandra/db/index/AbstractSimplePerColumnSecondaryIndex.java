@@ -27,7 +27,6 @@ import org.apache.cassandra.db.composites.CellName;
 import org.apache.cassandra.db.composites.CellNameType;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.dht.LocalPartitioner;
-import org.apache.cassandra.dht.LocalToken;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.concurrent.OpOrder;
@@ -66,12 +65,6 @@ public abstract class AbstractSimplePerColumnSecondaryIndex extends PerColumnSec
     }
 
     @Override
-    public DecoratedKey getIndexKeyFor(ByteBuffer value)
-    {
-        return new BufferDecoratedKey(new LocalToken(getIndexKeyComparator(), value), value);
-    }
-
-    @Override
     String indexTypeForGrouping()
     {
         return "_internal_";
@@ -93,6 +86,11 @@ public abstract class AbstractSimplePerColumnSecondaryIndex extends PerColumnSec
     }
 
     public void delete(ByteBuffer rowKey, Cell cell, OpOrder.Group opGroup)
+    {
+        deleteForCleanup(rowKey, cell, opGroup);
+    }
+
+    public void deleteForCleanup(ByteBuffer rowKey, Cell cell, OpOrder.Group opGroup)
     {
         if (!cell.isLive())
             return;

@@ -32,14 +32,18 @@ import java.lang.management.RuntimeMXBean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.KSMetaData;
 import org.apache.cassandra.config.UTMetaData;
 import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.cql3.functions.AggregateFunction;
+import org.apache.cassandra.cql3.functions.ScalarFunction;
 import org.apache.cassandra.cql3.functions.UDFunction;
 import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.UserType;
 import org.apache.cassandra.exceptions.AlreadyExistsException;
 import org.apache.cassandra.exceptions.ConfigurationException;
@@ -127,7 +131,7 @@ public class MigrationManager
                     submitMigrationTask(endpoint);
                 }
             };
-            StorageService.optionalTasks.schedule(runnable, MIGRATION_DELAY_IN_MS, TimeUnit.MILLISECONDS);
+            ScheduledExecutors.optionalTasks.schedule(runnable, MIGRATION_DELAY_IN_MS, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -148,7 +152,7 @@ public class MigrationManager
          */
         return MessagingService.instance().knowsVersion(endpoint)
                 && MessagingService.instance().getRawVersion(endpoint) == MessagingService.current_version
-                && !Gossiper.instance.isFatClient(endpoint);
+                && !Gossiper.instance.isGossipOnlyMember(endpoint);
     }
 
     public static boolean isReadyForBootstrap()
@@ -177,19 +181,36 @@ public class MigrationManager
     public void notifyCreateFunction(UDFunction udf)
     {
         for (IMigrationListener listener : listeners)
-            listener.onCreateFunction(udf.name().namespace, udf.name().name);
+            listener.onCreateFunction(udf.name().keyspace, udf.name().name);
     }
 
     public void notifyUpdateFunction(UDFunction udf)
     {
         for (IMigrationListener listener : listeners)
-            listener.onUpdateFunction(udf.name().namespace, udf.name().name);
+            listener.onUpdateFunction(udf.name().keyspace, udf.name().name);
     }
 
     public void notifyDropFunction(UDFunction udf)
     {
         for (IMigrationListener listener : listeners)
-            listener.onDropFunction(udf.name().namespace, udf.name().name);
+            listener.onDropFunction(udf.name().keyspace, udf.name().name);
+    }
+
+    private List<String> asString(List<AbstractType<?>> abstractTypes)
+    {
+        List<String> r = new ArrayList<>(abstractTypes.size());
+        for (AbstractType<?> abstractType : abstractTypes)
+            r.add(abstractType.asCQL3Type().toString());
+        return r;
+    }
+
+    private String udType(UDFunction udf)
+    {
+        if (udf instanceof ScalarFunction)
+            return "scalar";
+        if (udf instanceof AggregateFunction)
+            return "aggregate";
+        return "";
     }
 
     public void notifyUpdateKeyspace(KSMetaData ksm)
@@ -357,7 +378,7 @@ public class MigrationManager
     // Include the serialized keyspace for when a target node missed the CREATE KEYSPACE migration (see #5631).
     private static Mutation addSerializedKeyspace(Mutation migration, String ksName)
     {
-        migration.add(SystemKeyspace.readSchemaRow(SystemKeyspace.SCHEMA_KEYSPACES_CF, ksName).cf);
+        migration.add(SystemKeyspace.readSchemaRow(SystemKeyspace.SCHEMA_KEYSPACES_TABLE, ksName).cf);
         return migration;
     }
 
@@ -464,7 +485,7 @@ public class MigrationManager
         logger.debug("Truncating schema tables...");
 
         // truncate schema tables
-        for (String cf : SystemKeyspace.allSchemaCfs)
+        for (String cf : SystemKeyspace.ALL_SCHEMA_TABLES)
             SystemKeyspace.schemaCFS(cf).truncateBlocking();
 
         logger.debug("Clearing local schema keyspace definitions...");

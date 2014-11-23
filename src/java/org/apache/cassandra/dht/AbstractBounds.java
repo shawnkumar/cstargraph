@@ -30,7 +30,7 @@ import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.utils.Pair;
 
-public abstract class AbstractBounds<T extends RingPosition> implements Serializable
+public abstract class AbstractBounds<T extends RingPosition<T>> implements Serializable
 {
     private static final long serialVersionUID = 1L;
     public static final AbstractBoundsSerializer serializer = new AbstractBoundsSerializer();
@@ -44,13 +44,11 @@ public abstract class AbstractBounds<T extends RingPosition> implements Serializ
     public final T left;
     public final T right;
 
-    protected transient final IPartitioner partitioner;
-
-    public AbstractBounds(T left, T right, IPartitioner partitioner)
+    public AbstractBounds(T left, T right)
     {
+        assert left.getPartitioner() == right.getPartitioner();
         this.left = left;
         this.right = right;
-        this.partitioner = partitioner;
     }
 
     /**
@@ -160,7 +158,7 @@ public abstract class AbstractBounds<T extends RingPosition> implements Serializ
             if (!isToken)
                 kind = -(kind+1);
 
-            RingPosition left, right;
+            RingPosition<?> left, right;
             if (isToken)
             {
                 left = Token.serializer.deserialize(in);

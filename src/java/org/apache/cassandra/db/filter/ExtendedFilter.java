@@ -18,19 +18,29 @@
 package org.apache.cassandra.db.filter;
 
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.List;
+import java.util.SortedSet;
+import java.util.TreeSet;
 
-import org.apache.cassandra.db.marshal.CollectionType;
+import com.google.common.base.Objects;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.ColumnDefinition;
-import org.apache.cassandra.db.*;
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.cql3.Operator;
+import org.apache.cassandra.db.Cell;
+import org.apache.cassandra.db.ColumnFamily;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.DataRange;
+import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.IndexExpression;
 import org.apache.cassandra.db.composites.CellName;
 import org.apache.cassandra.db.composites.Composite;
-import org.apache.cassandra.db.marshal.AbstractType;
-import org.apache.cassandra.db.marshal.CompositeType;
+import org.apache.cassandra.db.marshal.*;
 
 /**
  * Extends a column filter (IFilter) to include a number of IndexExpression.
@@ -129,7 +139,7 @@ public abstract class ExtendedFilter
      */
     public abstract boolean isSatisfiedBy(DecoratedKey rowKey, ColumnFamily data, Composite prefix, ByteBuffer collectionElement);
 
-    public static boolean satisfies(int comparison, IndexExpression.Operator op)
+    public static boolean satisfies(int comparison, Operator op)
     {
         switch (op)
         {
@@ -146,6 +156,18 @@ public abstract class ExtendedFilter
             default:
                 throw new IllegalStateException();
         }
+    }
+
+    @Override
+    public String toString()
+    {
+        return Objects.toStringHelper(this)
+                      .add("dataRange", dataRange)
+                      .add("maxResults", maxResults)
+                      .add("currentLimit", currentLimit)
+                      .add("timestamp", timestamp)
+                      .add("countCQL3Rows", countCQL3Rows)
+                      .toString();
     }
 
     public static class WithClauses extends ExtendedFilter
@@ -300,7 +322,7 @@ public abstract class ExtendedFilter
                 }
                 else
                 {
-                    if (def.type.isCollection())
+                    if (def.type.isCollection() && def.type.isMultiCell())
                     {
                         if (!collectionSatisfies(def, data, prefix, expression, collectionElement))
                             return false;
@@ -314,31 +336,73 @@ public abstract class ExtendedFilter
                 if (dataValue == null)
                     return false;
 
-                int v = validator.compare(dataValue, expression.value);
-                if (!satisfies(v, expression.operator))
-                    return false;
+                if (expression.operator == Operator.CONTAINS)
+                {
+                    assert def != null && def.type.isCollection() && !def.type.isMultiCell();
+                    CollectionType type = (CollectionType)def.type;
+                    switch (type.kind)
+                    {
+                        case LIST:
+                            ListType<?> listType = (ListType)def.type;
+                            if (!listType.getSerializer().deserialize(dataValue).contains(listType.getElementsType().getSerializer().deserialize(expression.value)))
+                                return false;
+                            break;
+                        case SET:
+                            SetType<?> setType = (SetType)def.type;
+                            if (!setType.getSerializer().deserialize(dataValue).contains(setType.getElementsType().getSerializer().deserialize(expression.value)))
+                                return false;
+                            break;
+                        case MAP:
+                            MapType<?,?> mapType = (MapType)def.type;
+                            if (!mapType.getSerializer().deserialize(dataValue).containsValue(mapType.getValuesType().getSerializer().deserialize(expression.value)))
+                                return false;
+                            break;
+                    }
+                }
+                else if (expression.operator == Operator.CONTAINS_KEY)
+                {
+                    assert def != null && def.type.isCollection() && !def.type.isMultiCell() && def.type instanceof MapType;
+                    MapType<?,?> mapType = (MapType)def.type;
+                    if (mapType.getSerializer().getSerializedValue(dataValue, expression.value, mapType.getKeysType()) == null)
+                        return false;
+                }
+                else
+                {
+                    int v = validator.compare(dataValue, expression.value);
+                    if (!satisfies(v, expression.operator))
+                        return false;
+                }
             }
             return true;
         }
 
         private static boolean collectionSatisfies(ColumnDefinition def, ColumnFamily data, Composite prefix, IndexExpression expr, ByteBuffer collectionElement)
         {
-            assert def.type.isCollection();
+            assert def.type.isCollection() && def.type.isMultiCell();
+            CollectionType type = (CollectionType)def.type;
 
-            if (expr.operator == IndexExpression.Operator.CONTAINS)
+            if (expr.isContains())
             {
                 // get a slice of the collection cells
                 Iterator<Cell> iter = data.iterator(new ColumnSlice[]{ data.getComparator().create(prefix, def).slice() });
                 while (iter.hasNext())
                 {
-                    if (((CollectionType) def.type).valueComparator().compare(iter.next().value(), expr.value) == 0)
-                        return true;
+                    Cell cell = iter.next();
+                    if (type.kind == CollectionType.Kind.SET)
+                    {
+                        if (type.nameComparator().compare(cell.name().collectionElement(), expr.value) == 0)
+                            return true;
+                    }
+                    else
+                    {
+                        if (type.valueComparator().compare(cell.value(), expr.value) == 0)
+                            return true;
+                    }
                 }
 
                 return false;
             }
 
-            CollectionType type = (CollectionType)def.type;
             switch (type.kind)
             {
                 case LIST:
@@ -347,15 +411,13 @@ public abstract class ExtendedFilter
                 case SET:
                     return data.getColumn(data.getComparator().create(prefix, def, expr.value)) != null;
                 case MAP:
-                    if (expr.operator == IndexExpression.Operator.CONTAINS_KEY)
+                    if (expr.isContainsKey())
                     {
                         return data.getColumn(data.getComparator().create(prefix, def, expr.value)) != null;
                     }
-                    else
-                    {
-                        assert collectionElement != null;
-                        return type.valueComparator().compare(data.getColumn(data.getComparator().create(prefix, def, collectionElement)).value(), expr.value) == 0;
-                    }
+
+                    assert collectionElement != null;
+                    return type.valueComparator().compare(data.getColumn(data.getComparator().create(prefix, def, collectionElement)).value(), expr.value) == 0;
             }
             throw new AssertionError();
         }
@@ -382,6 +444,16 @@ public abstract class ExtendedFilter
                     return data.getSortedColumns().iterator().next().value();
             }
             throw new AssertionError();
+        }
+
+        @Override
+        public String toString()
+        {
+            return Objects.toStringHelper(this)
+                          .add("dataRange", dataRange)
+                          .add("timestamp", timestamp)
+                          .add("clause", clause)
+                          .toString();
         }
     }
 

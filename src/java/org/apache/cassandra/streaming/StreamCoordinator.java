@@ -45,11 +45,13 @@ public class StreamCoordinator
     private Map<InetAddress, HostStreamingData> peerSessions = new HashMap<>();
     private final int connectionsPerHost;
     private StreamConnectionFactory factory;
+    private final boolean keepSSTableLevel;
 
-    public StreamCoordinator(int connectionsPerHost, StreamConnectionFactory factory)
+    public StreamCoordinator(int connectionsPerHost, boolean keepSSTableLevel, StreamConnectionFactory factory)
     {
         this.connectionsPerHost = connectionsPerHost;
         this.factory = factory;
+        this.keepSSTableLevel = keepSSTableLevel;
     }
 
     public void setConnectionFactory(StreamConnectionFactory factory)
@@ -96,14 +98,14 @@ public class StreamCoordinator
         return new HashSet<>(peerSessions.keySet());
     }
 
-    public synchronized StreamSession getOrCreateNextSession(InetAddress peer)
+    public synchronized StreamSession getOrCreateNextSession(InetAddress peer, InetAddress connecting)
     {
-        return getOrCreateHostData(peer).getOrCreateNextSession(peer);
+        return getOrCreateHostData(peer).getOrCreateNextSession(peer, connecting);
     }
 
-    public synchronized StreamSession getOrCreateSessionById(InetAddress peer, int id)
+    public synchronized StreamSession getOrCreateSessionById(InetAddress peer, int id, InetAddress connecting)
     {
-        return getOrCreateHostData(peer).getOrCreateSessionById(peer, id);
+        return getOrCreateHostData(peer).getOrCreateSessionById(peer, id, connecting);
     }
 
     public synchronized void updateProgress(ProgressInfo info)
@@ -137,13 +139,13 @@ public class StreamCoordinator
 
             for (List<StreamSession.SSTableStreamingSections> subList : buckets)
             {
-                StreamSession session = sessionList.getOrCreateNextSession(to);
+                StreamSession session = sessionList.getOrCreateNextSession(to, to);
                 session.addTransferFiles(subList);
             }
         }
         else
         {
-            StreamSession session = sessionList.getOrCreateNextSession(to);
+            StreamSession session = sessionList.getOrCreateNextSession(to, to);
             session.addTransferFiles(sstableDetails);
         }
     }
@@ -228,12 +230,12 @@ public class StreamCoordinator
             return false;
         }
 
-        public StreamSession getOrCreateNextSession(InetAddress peer)
+        public StreamSession getOrCreateNextSession(InetAddress peer, InetAddress connecting)
         {
             // create
             if (streamSessions.size() < connectionsPerHost)
             {
-                StreamSession session = new StreamSession(peer, factory, streamSessions.size());
+                StreamSession session = new StreamSession(peer, connecting, factory, streamSessions.size(), keepSSTableLevel);
                 streamSessions.put(++lastReturned, session);
                 return session;
             }
@@ -260,12 +262,12 @@ public class StreamCoordinator
             return Collections.unmodifiableCollection(streamSessions.values());
         }
 
-        public StreamSession getOrCreateSessionById(InetAddress peer, int id)
+        public StreamSession getOrCreateSessionById(InetAddress peer, int id, InetAddress connecting)
         {
             StreamSession session = streamSessions.get(id);
             if (session == null)
             {
-                session = new StreamSession(peer, factory, id);
+                session = new StreamSession(peer, connecting, factory, id, keepSSTableLevel);
                 streamSessions.put(id, session);
             }
             return session;

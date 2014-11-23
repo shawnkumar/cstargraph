@@ -39,12 +39,17 @@ public class TupleType extends AbstractType<ByteBuffer>
 
     public TupleType(List<AbstractType<?>> types)
     {
+        for (int i = 0; i < types.size(); i++)
+            types.set(i, types.get(i).freeze());
         this.types = types;
     }
 
     public static TupleType getInstance(TypeParser parser) throws ConfigurationException, SyntaxException
     {
-        return new TupleType(parser.getTypeParameters());
+        List<AbstractType<?>> types = parser.getTypeParameters();
+        for (int i = 0; i < types.size(); i++)
+            types.set(i, types.get(i).freeze());
+        return new TupleType(types);
     }
 
     public AbstractType<?> type(int i)
@@ -70,8 +75,7 @@ public class TupleType extends AbstractType<ByteBuffer>
         ByteBuffer bb1 = o1.duplicate();
         ByteBuffer bb2 = o2.duplicate();
 
-        int i = 0;
-        while (bb1.remaining() > 0 && bb2.remaining() > 0)
+        for (int i = 0; bb1.remaining() > 0 && bb2.remaining() > 0; i++)
         {
             AbstractType<?> comparator = types.get(i);
 
@@ -93,8 +97,6 @@ public class TupleType extends AbstractType<ByteBuffer>
             int cmp = comparator.compare(value1, value2);
             if (cmp != 0)
                 return cmp;
-
-            ++i;
         }
 
         if (bb1.remaining() == 0)
@@ -294,6 +296,6 @@ public class TupleType extends AbstractType<ByteBuffer>
     @Override
     public String toString()
     {
-        return getClass().getName() + TypeParser.stringifyTypeParameters(types);
+        return getClass().getName() + TypeParser.stringifyTypeParameters(types, true);
     }
 }

@@ -24,12 +24,13 @@ import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.TimeUnit;
 
 import com.google.common.collect.Sets;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.db.DataTracker;
 import org.apache.cassandra.db.SystemKeyspace;
-import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.FBUtilities;
 
 public class SSTableDeletingTask implements Runnable
@@ -46,12 +47,11 @@ public class SSTableDeletingTask implements Runnable
     private final Descriptor desc;
     private final Set<Component> components;
     private DataTracker tracker;
-    private final long size;
 
     public SSTableDeletingTask(SSTableReader referent)
     {
         this.referent = referent;
-        if (referent.isOpenEarly)
+        if (referent.openReason == SSTableReader.OpenReason.EARLY)
         {
             this.desc = referent.descriptor.asType(Descriptor.Type.TEMPLINK);
             this.components = Sets.newHashSet(Component.DATA, Component.PRIMARY_INDEX);
@@ -61,7 +61,6 @@ public class SSTableDeletingTask implements Runnable
             this.desc = referent.descriptor;
             this.components = referent.components;
         }
-        this.size = referent.bytesOnDisk();
     }
 
     public void setTracker(DataTracker tracker)
@@ -71,11 +70,13 @@ public class SSTableDeletingTask implements Runnable
 
     public void schedule()
     {
-        StorageService.tasks.submit(this);
+        ScheduledExecutors.nonPeriodicTasks.submit(this);
     }
 
     public void run()
     {
+        long size = referent.bytesOnDisk();
+
         if (tracker != null)
             tracker.notifyDeleting(referent);
 
@@ -119,7 +120,7 @@ public class SSTableDeletingTask implements Runnable
             }
         };
 
-        FBUtilities.waitOnFuture(StorageService.tasks.schedule(runnable, 0, TimeUnit.MILLISECONDS));
+        FBUtilities.waitOnFuture(ScheduledExecutors.nonPeriodicTasks.schedule(runnable, 0, TimeUnit.MILLISECONDS));
     }
 }
 

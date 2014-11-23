@@ -45,13 +45,14 @@ public class CommitLogArchiver
 {
     private static final Logger logger = LoggerFactory.getLogger(CommitLogArchiver.class);
     public static final SimpleDateFormat format = new SimpleDateFormat("yyyy:MM:dd HH:mm:ss");
+    private static final String DELIMITER = ",";
     static
     {
         format.setTimeZone(TimeZone.getTimeZone("GMT"));
     }
 
     public final Map<String, Future<?>> archivePending = new ConcurrentHashMap<String, Future<?>>();
-    public final ExecutorService executor = new JMXEnabledThreadPoolExecutor("CommitLogArchiver");
+    private final ExecutorService executor = new JMXEnabledThreadPoolExecutor("CommitLogArchiver");
     private final String archiveCommand;
     private final String restoreCommand;
     private final String restoreDirectories;
@@ -81,6 +82,20 @@ public class CommitLogArchiver
                 archiveCommand = commitlog_commands.getProperty("archive_command");
                 restoreCommand = commitlog_commands.getProperty("restore_command");
                 restoreDirectories = commitlog_commands.getProperty("restore_directories");
+                if (restoreDirectories != null && !restoreDirectories.isEmpty())
+                {
+                    for (String dir : restoreDirectories.split(DELIMITER))
+                    {
+                        File directory = new File(dir);
+                        if (!directory.exists())
+                        {
+                            if (!directory.mkdir())
+                            {
+                                throw new RuntimeException("Unable to create directory: " + dir);
+                            }
+                        }
+                    }
+                }
                 String targetTime = commitlog_commands.getProperty("restore_point_in_time");
                 precision = TimeUnit.valueOf(commitlog_commands.getProperty("precision", "MICROSECONDS"));
                 try
@@ -174,12 +189,12 @@ public class CommitLogArchiver
         if (Strings.isNullOrEmpty(restoreDirectories))
             return;
 
-        for (String dir : restoreDirectories.split(","))
+        for (String dir : restoreDirectories.split(DELIMITER))
         {
             File[] files = new File(dir).listFiles();
             if (files == null)
             {
-                throw new RuntimeException("Unable to list director " + dir);
+                throw new RuntimeException("Unable to list directory " + dir);
             }
             for (File fromFile : files)
             {

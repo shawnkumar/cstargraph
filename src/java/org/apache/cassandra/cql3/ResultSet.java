@@ -58,6 +58,11 @@ public class ResultSet
         return rows.size();
     }
 
+    public boolean isEmpty()
+    {
+        return size() == 0;
+    }
+
     public void addRow(List<ByteBuffer> row)
     {
         assert row.size() == metadata.valueCount();
@@ -90,37 +95,6 @@ public class ResultSet
             for (int i = 0; i < toRemove; i++)
                 rows.remove(rows.size() - 1);
         }
-    }
-
-    public ResultSet withPagingState(PagingState state)
-    {
-        if (state == null)
-            return this;
-
-        // The metadata is shared by all execution of a given statement. So if there is a paging state
-        // we need to copy the metadata
-        return new ResultSet(metadata.withPagingState(state), rows);
-    }
-
-    public ResultSet makeCountResult(ColumnIdentifier alias)
-    {
-        assert metadata.names != null;
-        String ksName = metadata.names.get(0).ksName;
-        String cfName = metadata.names.get(0).cfName;
-        long count = rows.size();
-        return makeCountResult(ksName, cfName, count, alias);
-    }
-
-    public static ResultSet.Metadata makeCountMetadata(String ksName, String cfName, ColumnIdentifier alias)
-    {
-        ColumnSpecification spec = new ColumnSpecification(ksName, cfName, alias == null ? COUNT_COLUMN : alias, LongType.instance);
-        return new Metadata(Collections.singletonList(spec));
-    }
-
-    public static ResultSet makeCountResult(String ksName, String cfName, long count, ColumnIdentifier alias)
-    {
-        List<List<ByteBuffer>> newRows = Collections.singletonList(Collections.singletonList(ByteBufferUtil.bytes(count)));
-        return new ResultSet(makeCountMetadata(ksName, cfName, alias), newRows);
     }
 
     public CqlResult toThriftResult()
@@ -250,14 +224,14 @@ public class ResultSet
 
         public static final Metadata EMPTY = new Metadata(EnumSet.of(Flag.NO_METADATA), null, 0, null);
 
-        public final EnumSet<Flag> flags;
+        private final EnumSet<Flag> flags;
         // Please note that columnCount can actually be smaller than names, even if names is not null. This is
         // used to include columns in the resultSet that we need to do post-query re-orderings
         // (SelectStatement.orderResults) but that shouldn't be sent to the user as they haven't been requested
         // (CASSANDRA-4911). So the serialization code will exclude any columns in name whose index is >= columnCount.
         public final List<ColumnSpecification> names;
-        public final int columnCount;
-        public final PagingState pagingState;
+        private final int columnCount;
+        private PagingState pagingState;
 
         public Metadata(List<ColumnSpecification> names)
         {
@@ -272,6 +246,11 @@ public class ResultSet
             this.names = names;
             this.columnCount = columnCount;
             this.pagingState = pagingState;
+        }
+
+        public Metadata copy()
+        {
+            return new Metadata(EnumSet.copyOf(flags), names, columnCount, pagingState);
         }
 
         // The maximum number of values that the ResultSet can hold. This can be bigger than columnCount due to CASSANDRA-4911
@@ -305,14 +284,13 @@ public class ResultSet
             return true;
         }
 
-        public Metadata withPagingState(PagingState pagingState)
+        public void setHasMorePages(PagingState pagingState)
         {
             if (pagingState == null)
-                return this;
+                return;
 
-            EnumSet<Flag> newFlags = EnumSet.copyOf(flags);
-            newFlags.add(Flag.HAS_MORE_PAGES);
-            return new Metadata(newFlags, names, columnCount, pagingState);
+            flags.add(Flag.HAS_MORE_PAGES);
+            this.pagingState = pagingState;
         }
 
         public void setSkipMetadata()

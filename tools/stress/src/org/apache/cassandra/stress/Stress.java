@@ -117,6 +117,8 @@ public final class Stress
                 new StressGraph(settings).generateGraph();
             }
         }
+
+        System.exit(0);
     }
 
     /**
