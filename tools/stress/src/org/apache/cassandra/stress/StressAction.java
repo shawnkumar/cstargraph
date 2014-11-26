@@ -70,10 +70,15 @@ public class StressAction implements Runnable
 
         boolean success;
         if (settings.rate.minThreads > 0)
+        {
+            output.println("Thread count was not specified, testing multiple thread counts");
             success = runMulti(settings.rate.auto, rateLimiter);
+        }
         else
+        {
             success = null != run(settings.command.getFactory(settings), settings.rate.threadCount, settings.command.count,
                                   settings.command.duration, rateLimiter, settings.command.durationUnits, output);
+        }
 
         if (success)
             output.println("END");
@@ -110,6 +115,7 @@ public class StressAction implements Runnable
         List<String> runIds = new ArrayList<>();
         do
         {
+            output.println("");
             output.println(String.format("Running with %d threadCount", threadCount));
 
             StressMetrics result = run(settings.command.getFactory(settings), threadCount, settings.command.count,
