@@ -124,7 +124,7 @@ public class SSTableSimpleUnsortedWriter extends AbstractSSTableSimpleWriter
             sync();
     }
 
-    protected ColumnFamily getColumnFamily() throws IOException
+    protected ColumnFamily getColumnFamily()
     {
         ColumnFamily previous = buffer.get(currentKey);
         // If the CF already exist in memory, we'll just continue adding to it
@@ -142,7 +142,7 @@ public class SSTableSimpleUnsortedWriter extends AbstractSSTableSimpleWriter
         return previous;
     }
 
-    protected ColumnFamily createColumnFamily() throws IOException
+    protected ColumnFamily createColumnFamily()
     {
         return ArrayBackedSortedColumns.factory.create(metadata);
     }
@@ -205,9 +205,10 @@ public class SSTableSimpleUnsortedWriter extends AbstractSSTableSimpleWriter
         public void run()
         {
             SSTableWriter writer = null;
-            try
+
+            while (true)
             {
-                while (true)
+                try
                 {
                     Buffer b = writeQueue.take();
                     if (b == SENTINEL)
@@ -218,14 +219,17 @@ public class SSTableSimpleUnsortedWriter extends AbstractSSTableSimpleWriter
                         writer.append(entry.getKey(), entry.getValue());
                     writer.close();
                 }
+                catch (Throwable e)
+                {
+                    JVMStabilityInspector.inspectThrowable(e);
+                    if (writer != null)
+                        writer.abort();
+                    // Keep only the first exception
+                    if (exception == null)
+                      exception = e;
+                }
             }
-            catch (Throwable e)
-            {
-                JVMStabilityInspector.inspectThrowable(e);
-                if (writer != null)
-                    writer.abort();
-                exception = e;
-            }
+
         }
     }
 }

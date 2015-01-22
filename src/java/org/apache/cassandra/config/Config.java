@@ -21,16 +21,17 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 import com.google.common.collect.Sets;
-import org.supercsv.io.CsvListReader;
-import org.supercsv.prefs.CsvPreference;
 
 import org.apache.cassandra.config.EncryptionOptions.ClientEncryptionOptions;
 import org.apache.cassandra.config.EncryptionOptions.ServerEncryptionOptions;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.util.NativeAllocator;
 import org.apache.cassandra.utils.FBUtilities;
+import org.supercsv.io.CsvListReader;
+import org.supercsv.prefs.CsvPreference;
 
 /**
  * A class that contains configuration properties for the cassandra node it runs within.
@@ -42,7 +43,11 @@ public class Config
     public String cluster_name = "Test Cluster";
     public String authenticator;
     public String authorizer;
+    public String role_manager;
     public int permissions_validity_in_ms = 2000;
+    public int permissions_cache_max_entries = 1000;
+    public int permissions_update_interval_in_ms = -1;
+    public int roles_validity_in_ms = 2000;
 
     /* Hashing strategy Random or OPHF */
     public String partitioner;
@@ -187,6 +192,7 @@ public class Config
     public volatile int key_cache_save_period = 14400;
     public volatile int key_cache_keys_to_save = Integer.MAX_VALUE;
 
+    public String row_cache_class_name = "org.apache.cassandra.cache.OHCProvider";
     public long row_cache_size_in_mb = 0;
     public volatile int row_cache_save_period = 0;
     public volatile int row_cache_keys_to_save = Integer.MAX_VALUE;
@@ -213,6 +219,10 @@ public class Config
 
     private static final CsvPreference STANDARD_SURROUNDING_SPACES_NEED_QUOTES = new CsvPreference.Builder(CsvPreference.STANDARD_PREFERENCE)
                                                                                                   .surroundingSpacesNeedQuotes(true).build();
+
+    // TTL for different types of trace events.
+    public int tracetype_query_ttl = (int) TimeUnit.DAYS.toSeconds(1);
+    public int tracetype_repair_ttl = (int) TimeUnit.DAYS.toSeconds(7);
 
     public static boolean getOutboundBindAny()
     {

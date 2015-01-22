@@ -21,6 +21,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
 
+import javax.management.openmbean.CompositeData;
+import javax.management.openmbean.OpenDataException;
+
 /**
  * The MBean interface for ColumnFamilyStore
  */
@@ -230,6 +233,24 @@ public interface ColumnFamilyStoreMBean
     public long getBloomFilterDiskSpaceUsed();
 
     /**
+     * @see org.apache.cassandra.metrics.ColumnFamilyMetrics#bloomFilterOffHeapMemoryUsed
+     */
+    @Deprecated
+    public long getBloomFilterOffHeapMemoryUsed();
+
+    /**
+     * @see org.apache.cassandra.metrics.ColumnFamilyMetrics#indexSummaryOffHeapMemoryUsed
+     */
+    @Deprecated
+    public long getIndexSummaryOffHeapMemoryUsed();
+
+    /**
+     * @see org.apache.cassandra.metrics.ColumnFamilyMetrics#compressionMetadataOffHeapMemoryUsed
+     */
+    @Deprecated
+    public long getCompressionMetadataOffHeapMemoryUsed();
+
+    /**
      * Gets the minimum number of sstables in queue before compaction kicks off
      */
     public int getMinimumCompactionThreshold();
@@ -349,4 +370,15 @@ public interface ColumnFamilyStoreMBean
      * @return the size of SSTables in "snapshots" subdirectory which aren't live anymore
      */
     public long trueSnapshotsSize();
+
+    /**
+     * begin sampling for a specific sampler with a given capacity.  The cardinality may
+     * be larger than the capacity, but depending on the use case it may affect its accuracy
+     */
+    public void beginLocalSampling(String sampler, int capacity);
+
+    /**
+     * @return top <i>count</i> items for the sampler since beginLocalSampling was called
+     */
+    public CompositeData finishLocalSampling(String sampler, int count) throws OpenDataException;
 }

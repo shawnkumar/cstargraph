@@ -289,16 +289,12 @@ public class BigTableWriter extends SSTableWriter
         assert descriptor.type.isTemporary;
         if (iwriter == null && dataFile == null)
             return;
+
         if (iwriter != null)
-        {
-            FileUtils.closeQuietly(iwriter.indexFile);
-            if (closeBf)
-            {
-                iwriter.bf.close();
-            }
-        }
+            iwriter.abort(closeBf);
+
         if (dataFile!= null)
-            FileUtils.closeQuietly(dataFile);
+            dataFile.abort();
 
         Set<Component> components = SSTable.componentsFor(descriptor);
         try
@@ -323,6 +319,18 @@ public class BigTableWriter extends SSTableWriter
         last = lastWrittenKey = getMinimalKey(last);
     }
 
+    private Descriptor makeTmpLinks()
+    {
+        // create temp links if they don't already exist
+        Descriptor link = descriptor.asType(Descriptor.Type.TEMPLINK);
+        if (!new File(link.filenameFor(Component.PRIMARY_INDEX)).exists())
+        {
+            FileUtils.createHardLink(new File(descriptor.filenameFor(Component.PRIMARY_INDEX)), new File(link.filenameFor(Component.PRIMARY_INDEX)));
+            FileUtils.createHardLink(new File(descriptor.filenameFor(Component.DATA)), new File(link.filenameFor(Component.DATA)));
+        }
+        return link;
+    }
+
     public SSTableReader openEarly(long maxDataAge)
     {
         StatsMetadata sstableMetadata = (StatsMetadata) metadataCollector.finalizeMetadata(partitioner.getClass().getCanonicalName(),
@@ -334,17 +342,10 @@ public class BigTableWriter extends SSTableWriter
         if (exclusiveUpperBoundOfReadableIndex == null)
             return null;
 
-        // create temp links if they don't already exist
-        Descriptor link = descriptor.asType(Descriptor.Type.TEMPLINK);
-        if (!new File(link.filenameFor(Component.PRIMARY_INDEX)).exists())
-        {
-            FileUtils.createHardLink(new File(descriptor.filenameFor(Component.PRIMARY_INDEX)), new File(link.filenameFor(Component.PRIMARY_INDEX)));
-            FileUtils.createHardLink(new File(descriptor.filenameFor(Component.DATA)), new File(link.filenameFor(Component.DATA)));
-        }
-
+        Descriptor link = makeTmpLinks();
         // open the reader early, giving it a FINAL descriptor type so that it is indistinguishable for other consumers
-        SegmentedFile ifile = iwriter.builder.openEarly(link.filenameFor(Component.PRIMARY_INDEX));
-        SegmentedFile dfile = dbuilder.openEarly(link.filenameFor(Component.DATA));
+        SegmentedFile ifile = iwriter.builder.complete(link.filenameFor(Component.PRIMARY_INDEX), FinishType.EARLY);
+        SegmentedFile dfile = dbuilder.complete(link.filenameFor(Component.DATA), FinishType.EARLY);
         SSTableReader sstable = SSTableReader.internalOpen(descriptor.asType(Descriptor.Type.FINAL),
                                                            components, metadata,
                                                            partitioner, ifile,
@@ -356,7 +357,11 @@ public class BigTableWriter extends SSTableWriter
         sstable.last = getMinimalKey(exclusiveUpperBoundOfReadableIndex);
         DecoratedKey inclusiveUpperBoundOfReadableData = iwriter.getMaxReadableKey(1);
         if (inclusiveUpperBoundOfReadableData == null)
+        {
+            // Prevent leaving tmplink files on disk
+            sstable.releaseReference();
             return null;
+        }
         int offset = 2;
         while (true)
         {
@@ -365,70 +370,99 @@ public class BigTableWriter extends SSTableWriter
                 break;
             inclusiveUpperBoundOfReadableData = iwriter.getMaxReadableKey(offset++);
             if (inclusiveUpperBoundOfReadableData == null)
+            {
+                sstable.releaseReference();
                 return null;
+            }
         }
         sstable.last = getMinimalKey(inclusiveUpperBoundOfReadableData);
         return sstable;
     }
 
-    public SSTableReader closeAndOpenReader(long maxDataAge, long repairedAt)
+    public SSTableReader closeAndOpenReader()
     {
-        Pair<Descriptor, StatsMetadata> p = close(repairedAt);
-        Descriptor newdesc = p.left;
-        StatsMetadata sstableMetadata = p.right;
+        return closeAndOpenReader(System.currentTimeMillis());
+    }
+
+    public SSTableReader closeAndOpenReader(long maxDataAge)
+    {
+        return finish(FinishType.NORMAL, maxDataAge, this.repairedAt);
+    }
+
+    public SSTableReader finish(FinishType finishType, long maxDataAge, long repairedAt)
+    {
+        Pair<Descriptor, StatsMetadata> p;
+
+        p = close(finishType, repairedAt < 0 ? this.repairedAt : repairedAt);
+        Descriptor desc = p.left;
+        StatsMetadata metadata = p.right;
+
+        if (finishType == FinishType.EARLY)
+            desc = makeTmpLinks();
 
         // finalize in-memory state for the reader
-        SegmentedFile ifile = iwriter.builder.complete(newdesc.filenameFor(Component.PRIMARY_INDEX));
-        SegmentedFile dfile = dbuilder.complete(newdesc.filenameFor(Component.DATA));
-        SSTableReader sstable = SSTableReader.internalOpen(newdesc,
+        SegmentedFile ifile = iwriter.builder.complete(desc.filenameFor(Component.PRIMARY_INDEX), finishType);
+        SegmentedFile dfile = dbuilder.complete(desc.filenameFor(Component.DATA), finishType);
+        SSTableReader sstable = SSTableReader.internalOpen(desc.asType(Descriptor.Type.FINAL),
                                                            components,
-                                                           metadata,
+                                                           this.metadata,
                                                            partitioner,
                                                            ifile,
                                                            dfile,
                                                            iwriter.summary.build(partitioner),
                                                            iwriter.bf,
                                                            maxDataAge,
-                                                           sstableMetadata,
-                                                           SSTableReader.OpenReason.NORMAL);
+                                                           metadata,
+                                                           finishType.openReason);
         sstable.first = getMinimalKey(first);
         sstable.last = getMinimalKey(last);
-        // try to save the summaries to disk
-        sstable.saveSummary(iwriter.builder, dbuilder);
-        iwriter = null;
-        dbuilder = null;
+
+        switch (finishType)
+        {
+            case NORMAL: case FINISH_EARLY:
+            // try to save the summaries to disk
+            sstable.saveSummary(iwriter.builder, dbuilder);
+            iwriter = null;
+            dbuilder = null;
+        }
         return sstable;
     }
 
     // Close the writer and return the descriptor to the new sstable and it's metadata
     public Pair<Descriptor, StatsMetadata> close()
     {
-        return close(this.repairedAt);
+        return close(FinishType.NORMAL, this.repairedAt);
     }
 
-    private Pair<Descriptor, StatsMetadata> close(long repairedAt)
+    private Pair<Descriptor, StatsMetadata> close(FinishType type, long repairedAt)
     {
+        switch (type)
+        {
+            case EARLY: case NORMAL:
+            iwriter.close();
+            dataFile.close();
+        }
 
-        // index and filter
-        iwriter.close();
-        // main data, close will truncate if necessary
-        dataFile.close();
-        dataFile.writeFullChecksum(descriptor);
         // write sstable statistics
-        Map<MetadataType, MetadataComponent> metadataComponents = metadataCollector.finalizeMetadata(
-                                                                                    partitioner.getClass().getCanonicalName(),
-                                                                                    metadata.getBloomFilterFpChance(),
-                                                                                    repairedAt);
-        writeMetadata(descriptor, metadataComponents);
-
-        // save the table of components
-        SSTable.appendTOC(descriptor, components);
+        Map<MetadataType, MetadataComponent> metadataComponents;
+        metadataComponents = metadataCollector
+                             .finalizeMetadata(partitioner.getClass().getCanonicalName(),
+                                               metadata.getBloomFilterFpChance(),repairedAt);
 
         // remove the 'tmp' marker from all components
-        return Pair.create(SSTableWriter.rename(descriptor, components), (StatsMetadata) metadataComponents.get(MetadataType.STATS));
+        Descriptor descriptor = this.descriptor;
+        switch (type)
+        {
+            case NORMAL: case FINISH_EARLY:
+            dataFile.writeFullChecksum(descriptor);
+            writeMetadata(descriptor, metadataComponents);
+            // save the table of components
+            SSTable.appendTOC(descriptor, components);
+            descriptor = rename(descriptor, components);
+        }
 
+        return Pair.create(descriptor, (StatsMetadata) metadataComponents.get(MetadataType.STATS));
     }
-
 
     private static void writeMetadata(Descriptor desc, Map<MetadataType, MetadataComponent> components)
     {
@@ -460,7 +494,7 @@ public class BigTableWriter extends SSTableWriter
     /**
      * Encapsulates writing the index and filter for an SSTable. The state of this object is not valid until it has been closed.
      */
-    class IndexWriter implements Closeable
+    class IndexWriter
     {
         private final SequentialWriter indexFile;
         public final SegmentedFile.Builder builder;
@@ -502,6 +536,13 @@ public class BigTableWriter extends SSTableWriter
 
             summary.maybeAddEntry(key, indexPosition);
             builder.addPotentialBoundary(indexPosition);
+        }
+
+        public void abort(boolean closeBf)
+        {
+            indexFile.abort();
+            if (closeBf)
+                bf.close();
         }
 
         /**

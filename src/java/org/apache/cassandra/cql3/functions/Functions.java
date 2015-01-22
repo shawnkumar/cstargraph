@@ -18,28 +18,24 @@
 package org.apache.cassandra.cql3.functions;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 import com.google.common.collect.ArrayListMultimap;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.cql3.*;
-import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.service.MigrationListener;
+import org.apache.cassandra.service.MigrationManager;
 
 public abstract class Functions
 {
-    private static final Logger logger = LoggerFactory.getLogger(Functions.class);
-
     // We special case the token function because that's the only function whose argument types actually
     // depend on the table on which the function is called. Because it's the sole exception, it's easier
     // to handle it as a special case.
     private static final FunctionName TOKEN_FUNCTION_NAME = FunctionName.nativeFunction("token");
-
-    private static final String SELECT_UDFS = "SELECT * FROM " + SystemKeyspace.NAME + '.' + SystemKeyspace.SCHEMA_FUNCTIONS_TABLE;
 
     private Functions() {}
 
@@ -83,21 +79,13 @@ public abstract class Functions
         declare(AggregateFcts.avgFunctionForDouble);
         declare(AggregateFcts.avgFunctionForVarint);
         declare(AggregateFcts.avgFunctionForDecimal);
+
+        MigrationManager.instance.register(new FunctionsMigrationListener());
     }
 
     private static void declare(Function fun)
     {
         declared.put(fun.name(), fun);
-    }
-
-    /**
-     * Loading existing UDFs from the schema.
-     */
-    public static void loadUDFFromSchema()
-    {
-        logger.debug("Loading UDFs");
-        for (UntypedResultSet.Row row : QueryProcessor.executeOnceInternal(SELECT_UDFS))
-            addFunction(UDFunction.fromSchema(row));
     }
 
     public static ColumnSpecification makeArgSpec(String receiverKs, String receiverCf, Function fun, int i)
@@ -188,7 +176,7 @@ public abstract class Functions
         assert name.hasKeyspace() : "function name not fully qualified";
         for (Function f : declared.get(name))
         {
-            if (f.argTypes().equals(argTypes))
+            if (typeEquals(f.argTypes(), argTypes))
                 return f;
         }
         return null;
@@ -262,8 +250,8 @@ public abstract class Functions
         return sb.toString();
     }
 
-    // This is *not* thread safe but is only called in DefsTables that is synchronized.
-    public static void addFunction(UDFunction fun)
+    // This is *not* thread safe but is only called in SchemaTables that is synchronized.
+    public static void addFunction(AbstractFunction fun)
     {
         // We shouldn't get there unless that function don't exist
         assert find(fun.name(), fun.argTypes()) == null;
@@ -279,9 +267,47 @@ public abstract class Functions
     }
 
     // Same remarks than for addFunction
-    public static void replaceFunction(UDFunction fun)
+    public static void replaceFunction(AbstractFunction fun)
     {
         removeFunction(fun.name(), fun.argTypes());
         addFunction(fun);
+    }
+
+    public static List<Function> getReferencesTo(Function old)
+    {
+        List<Function> references = new ArrayList<>();
+        for (Function function : declared.values())
+            if (function.hasReferenceTo(old))
+                references.add(function);
+        return references;
+    }
+
+    public static Collection<Function> all()
+    {
+        return declared.values();
+    }
+
+    public static boolean typeEquals(AbstractType<?> t1, AbstractType<?> t2)
+    {
+        return t1.asCQL3Type().toString().equals(t2.asCQL3Type().toString());
+    }
+
+    public static boolean typeEquals(List<AbstractType<?>> t1, List<AbstractType<?>> t2)
+    {
+        if (t1.size() != t2.size())
+            return false;
+        for (int i = 0; i < t1.size(); i ++)
+            if (!typeEquals(t1.get(i), t2.get(i)))
+                return false;
+        return true;
+    }
+
+    private static class FunctionsMigrationListener extends MigrationListener
+    {
+        public void onUpdateUserType(String ksName, String typeName) {
+            for (Function function : all())
+                if (function instanceof UDFunction)
+                    ((UDFunction)function).userTypeUpdated(ksName, typeName);
+        }
     }
 }

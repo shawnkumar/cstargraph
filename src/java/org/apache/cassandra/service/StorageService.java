@@ -17,10 +17,7 @@
  */
 package org.apache.cassandra.service;
 
-import java.io.ByteArrayInputStream;
-import java.io.DataInputStream;
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
 import java.lang.management.ManagementFactory;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -29,19 +26,9 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-
-import javax.management.JMX;
-import javax.management.MBeanServer;
-import javax.management.Notification;
-import javax.management.NotificationBroadcasterSupport;
-import javax.management.ObjectName;
+import javax.management.*;
 import javax.management.openmbean.TabularData;
 import javax.management.openmbean.TabularDataSupport;
-
-import ch.qos.logback.classic.LoggerContext;
-import ch.qos.logback.classic.jmx.JMXConfiguratorMBean;
-import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.core.Appender;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Predicate;
@@ -52,9 +39,18 @@ import org.apache.commons.lang3.time.DurationFormatUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.auth.Auth;
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.jmx.JMXConfiguratorMBean;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.Appender;
+import org.apache.cassandra.auth.AuthKeyspace;
+import org.apache.cassandra.auth.AuthMigrationListener;
 import org.apache.cassandra.concurrent.*;
 import org.apache.cassandra.config.*;
+import org.apache.cassandra.cql3.QueryOptions;
+import org.apache.cassandra.cql3.QueryProcessor;
+import org.apache.cassandra.cql3.UntypedResultSet;
+import org.apache.cassandra.cql3.statements.SelectStatement;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.commitlog.CommitLog;
 import org.apache.cassandra.db.compaction.CompactionManager;
@@ -70,15 +66,9 @@ import org.apache.cassandra.io.sstable.SSTableLoader;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.locator.*;
 import org.apache.cassandra.metrics.StorageMetrics;
-import org.apache.cassandra.net.AsyncOneResponse;
-import org.apache.cassandra.net.MessageOut;
-import org.apache.cassandra.net.MessagingService;
-import org.apache.cassandra.net.ResponseVerbHandler;
-import org.apache.cassandra.repair.RepairMessageVerbHandler;
-import org.apache.cassandra.repair.RepairSessionResult;
+import org.apache.cassandra.net.*;
+import org.apache.cassandra.repair.*;
 import org.apache.cassandra.repair.messages.RepairOption;
-import org.apache.cassandra.repair.RepairSession;
-import org.apache.cassandra.repair.RepairParallelism;
 import org.apache.cassandra.service.paxos.CommitVerbHandler;
 import org.apache.cassandra.service.paxos.PrepareVerbHandler;
 import org.apache.cassandra.service.paxos.ProposeVerbHandler;
@@ -87,6 +77,9 @@ import org.apache.cassandra.thrift.EndpointDetails;
 import org.apache.cassandra.thrift.TokenRange;
 import org.apache.cassandra.thrift.cassandraConstants;
 import org.apache.cassandra.tracing.TraceKeyspace;
+import org.apache.cassandra.tracing.TraceState;
+import org.apache.cassandra.tracing.Tracing;
+import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.utils.*;
 
 import static java.nio.charset.StandardCharsets.ISO_8859_1;
@@ -836,7 +829,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                     Gossiper.instance.replacedEndpoint(existing);
             assert tokenMetadata.sortedTokens().size() > 0;
 
-            Auth.setup();
+            doAuthSetup();
         }
         else
         {
@@ -875,8 +868,39 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             logger.info("Leaving write survey mode and joining ring at operator request");
             assert tokenMetadata.sortedTokens().size() > 0;
 
-            Auth.setup();
+            doAuthSetup();
         }
+    }
+
+    private void doAuthSetup()
+    {
+        try
+        {
+            // if we don't have system_auth keyspace at this point, then create it manually
+            // otherwise, create any necessary tables as we may be upgrading in which case
+            // the ks exists with the only the legacy tables defined
+            if (Schema.instance.getKSMetaData(AuthKeyspace.NAME) == null)
+            {
+                MigrationManager.announceNewKeyspace(AuthKeyspace.definition(), 0, false);
+            }
+            else
+            {
+                for (Map.Entry<String, CFMetaData> table : AuthKeyspace.definition().cfMetaData().entrySet())
+                {
+                    if (Schema.instance.getCFMetaData(AuthKeyspace.NAME, table.getKey()) == null)
+                        MigrationManager.announceNewColumnFamily(table.getValue());
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            throw new AssertionError(e); // shouldn't ever happen.
+        }
+
+        DatabaseDescriptor.getRoleManager().setup();
+        DatabaseDescriptor.getAuthenticator().setup();
+        DatabaseDescriptor.getAuthorizer().setup();
+        MigrationManager.instance.register(new AuthMigrationListener());
     }
 
     public boolean isJoined()
@@ -1582,15 +1606,20 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             }
         }
 
+        boolean isMoving = tokenMetadata.isMoving(endpoint); // capture because updateNormalTokens clears moving status
         tokenMetadata.updateNormalTokens(tokensToUpdateInMetadata, endpoint);
         for (InetAddress ep : endpointsToRemove)
+        {
             removeEndpoint(ep);
+            if (DatabaseDescriptor.isReplacing() && DatabaseDescriptor.getReplaceAddress().equals(ep))
+                Gossiper.instance.replacementQuarantine(ep); // quarantine locally longer than normally; see CASSANDRA-8260
+        }
         if (!tokensToUpdateInSystemKeyspace.isEmpty())
             SystemKeyspace.updateTokens(endpoint, tokensToUpdateInSystemKeyspace);
         if (!localTokensToRemove.isEmpty())
             SystemKeyspace.updateLocalTokens(Collections.<Token>emptyList(), localTokensToRemove);
 
-        if (tokenMetadata.isMoving(endpoint)) // if endpoint was moving to a new token
+        if (isMoving)
         {
             tokenMetadata.removeFromMoving(endpoint);
             for (IEndpointLifecycleSubscriber subscriber : lifecycleSubscribers)
@@ -2452,25 +2481,30 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                                 boolean fullRepair,
                                 String... columnFamilies)
     {
-        return forceRepairAsync(keyspace, isSequential ? RepairParallelism.SEQUENTIAL : RepairParallelism.PARALLEL, dataCenters, hosts, primaryRange, fullRepair, columnFamilies);
+        return forceRepairAsync(keyspace, isSequential ? RepairParallelism.SEQUENTIAL.ordinal() : RepairParallelism.PARALLEL.ordinal(), dataCenters, hosts, primaryRange, fullRepair, columnFamilies);
     }
 
     @Deprecated
     public int forceRepairAsync(String keyspace,
-                                RepairParallelism parallelismDegree,
+                                int parallelismDegree,
                                 Collection<String> dataCenters,
                                 Collection<String> hosts,
                                 boolean primaryRange,
                                 boolean fullRepair,
                                 String... columnFamilies)
     {
-        if (!FBUtilities.isUnix() && parallelismDegree != RepairParallelism.PARALLEL)
+        if (parallelismDegree < 0 || parallelismDegree > RepairParallelism.values().length - 1)
+        {
+            throw new IllegalArgumentException("Invalid parallelism degree specified: " + parallelismDegree);
+        }
+        RepairParallelism parallelism = RepairParallelism.values()[parallelismDegree];
+        if (FBUtilities.isWindows() && parallelism != RepairParallelism.PARALLEL)
         {
             logger.warn("Snapshot-based repair is not yet supported on Windows.  Reverting to parallel repair.");
-            parallelismDegree = RepairParallelism.PARALLEL;
+            parallelism = RepairParallelism.PARALLEL;
         }
 
-        RepairOption options = new RepairOption(parallelismDegree, primaryRange, !fullRepair, 1, Collections.<Range<Token>>emptyList());
+        RepairOption options = new RepairOption(parallelism, primaryRange, !fullRepair, false, 1, Collections.<Range<Token>>emptyList());
         if (dataCenters != null)
         {
             options.getDataCenters().addAll(dataCenters);
@@ -2513,26 +2547,31 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                                      boolean fullRepair,
                                      String... columnFamilies)
     {
-        return forceRepairRangeAsync(beginToken, endToken, keyspaceName, isSequential ? RepairParallelism.SEQUENTIAL : RepairParallelism.PARALLEL, dataCenters, hosts, fullRepair, columnFamilies);
+        return forceRepairRangeAsync(beginToken, endToken, keyspaceName, isSequential ? RepairParallelism.SEQUENTIAL.ordinal() : RepairParallelism.PARALLEL.ordinal(), dataCenters, hosts, fullRepair, columnFamilies);
     }
 
     public int forceRepairRangeAsync(String beginToken,
                                      String endToken,
                                      String keyspaceName,
-                                     RepairParallelism parallelismDegree,
+                                     int parallelismDegree,
                                      Collection<String> dataCenters,
                                      Collection<String> hosts,
                                      boolean fullRepair,
                                      String... columnFamilies)
     {
-        if (!FBUtilities.isUnix() && parallelismDegree != RepairParallelism.PARALLEL)
+        if (parallelismDegree < 0 || parallelismDegree > RepairParallelism.values().length - 1)
+        {
+            throw new IllegalArgumentException("Invalid parallelism degree specified: " + parallelismDegree);
+        }
+        RepairParallelism parallelism = RepairParallelism.values()[parallelismDegree];
+        if (FBUtilities.isWindows() && parallelism != RepairParallelism.PARALLEL)
         {
             logger.warn("Snapshot-based repair is not yet supported on Windows.  Reverting to parallel repair.");
-            parallelismDegree = RepairParallelism.PARALLEL;
+            parallelism = RepairParallelism.PARALLEL;
         }
         Collection<Range<Token>> repairingRange = createRepairRangeFrom(beginToken, endToken);
 
-        RepairOption options = new RepairOption(parallelismDegree, false, !fullRepair, 1, repairingRange);
+        RepairOption options = new RepairOption(parallelism, false, !fullRepair, false, 1, repairingRange);
         options.getDataCenters().addAll(dataCenters);
         if (hosts != null)
         {
@@ -2616,6 +2655,75 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         return cmd;
     }
 
+    private Thread createQueryThread(final int cmd, final UUID sessionId)
+    {
+        return new Thread(new WrappedRunnable()
+        {
+            // Query events within a time interval that overlaps the last by one second. Ignore duplicates. Ignore local traces.
+            // Wake up upon local trace activity. Query when notified of trace activity with a timeout that doubles every two timeouts.
+            public void runMayThrow() throws Exception
+            {
+                TraceState state = Tracing.instance.get(sessionId);
+                if (state == null)
+                    throw new Exception("no tracestate");
+
+                String format = "select event_id, source, activity from %s.%s where session_id = ? and event_id > ? and event_id < ?;";
+                String query = String.format(format, TraceKeyspace.NAME, TraceKeyspace.EVENTS);
+                SelectStatement statement = (SelectStatement) QueryProcessor.parseStatement(query).prepare().statement;
+
+                ByteBuffer sessionIdBytes = ByteBufferUtil.bytes(sessionId);
+                InetAddress source = FBUtilities.getBroadcastAddress();
+
+                HashSet<UUID>[] seen = new HashSet[] { new HashSet<UUID>(), new HashSet<UUID>() };
+                int si = 0;
+                UUID uuid;
+
+                long tlast = System.currentTimeMillis(), tcur;
+
+                TraceState.Status status;
+                long minWaitMillis = 125;
+                long maxWaitMillis = 1000 * 1024L;
+                long timeout = minWaitMillis;
+                boolean shouldDouble = false;
+
+                while ((status = state.waitActivity(timeout)) != TraceState.Status.STOPPED)
+                {
+                    if (status == TraceState.Status.IDLE)
+                    {
+                        timeout = shouldDouble ? Math.min(timeout * 2, maxWaitMillis) : timeout;
+                        shouldDouble = !shouldDouble;
+                    }
+                    else
+                    {
+                        timeout = minWaitMillis;
+                        shouldDouble = false;
+                    }
+                    ByteBuffer tminBytes = ByteBufferUtil.bytes(UUIDGen.minTimeUUID(tlast - 1000));
+                    ByteBuffer tmaxBytes = ByteBufferUtil.bytes(UUIDGen.maxTimeUUID(tcur = System.currentTimeMillis()));
+                    QueryOptions options = QueryOptions.forInternalCalls(ConsistencyLevel.ONE, Lists.newArrayList(sessionIdBytes, tminBytes, tmaxBytes));
+                    ResultMessage.Rows rows = statement.execute(QueryState.forInternalCalls(), options);
+                    UntypedResultSet result = UntypedResultSet.create(rows.result);
+
+                    for (UntypedResultSet.Row r : result)
+                    {
+                        if (source.equals(r.getInetAddress("source")))
+                            continue;
+                        if ((uuid = r.getUUID("event_id")).timestamp() > (tcur - 1000) * 10000)
+                            seen[si].add(uuid);
+                        if (seen[si == 0 ? 1 : 0].contains(uuid))
+                            continue;
+                        String message = String.format("%s: %s", r.getInetAddress("source"), r.getString("activity"));
+                        sendNotification("repair", message, new int[]{cmd, ActiveRepairService.Status.RUNNING.ordinal()});
+                    }
+                    tlast = tcur;
+
+                    si = si == 0 ? 1 : 0;
+                    seen[si].clear();
+                }
+            }
+        });
+    }
+
     private FutureTask<Object> createRepairTask(final int cmd, final String keyspace, final RepairOption options)
     {
         if (!options.getDataCenters().isEmpty() && options.getDataCenters().contains(DatabaseDescriptor.getLocalDataCenter()))
@@ -2627,10 +2735,34 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         {
             protected void runMayThrow() throws Exception
             {
+                final TraceState traceState;
+
+                String[] columnFamilies = options.getColumnFamilies().toArray(new String[options.getColumnFamilies().size()]);
+                Iterable<ColumnFamilyStore> validColumnFamilies = getValidColumnFamilies(false, false, keyspace, columnFamilies);
+
                 final long startTime = System.currentTimeMillis();
                 String message = String.format("Starting repair command #%d, repairing keyspace %s with %s", cmd, keyspace, options);
                 logger.info(message);
                 sendNotification("repair", message, new int[]{cmd, ActiveRepairService.Status.STARTED.ordinal()});
+                if (options.isTraced())
+                {
+                    StringBuilder cfsb = new StringBuilder();
+                    for (ColumnFamilyStore cfs : validColumnFamilies)
+                        cfsb.append(", ").append(cfs.keyspace.getName()).append(".").append(cfs.name);
+
+                    UUID sessionId = Tracing.instance.newSession(Tracing.TraceType.REPAIR);
+                    traceState = Tracing.instance.begin("repair", ImmutableMap.of("keyspace", keyspace, "columnFamilies", cfsb.substring(2)));
+                    Tracing.traceRepair(message);
+                    traceState.enableActivityNotification();
+                    traceState.setNotificationHandle(new int[]{ cmd, ActiveRepairService.Status.RUNNING.ordinal() });
+                    Thread queryThread = createQueryThread(cmd, sessionId);
+                    queryThread.setName("RepairTracePolling");
+                    queryThread.start();
+                }
+                else
+                {
+                    traceState = null;
+                }
 
                 final Set<InetAddress> allNeighbors = new HashSet<>();
                 Map<Range, Set<InetAddress>> rangeToNeighbors = new HashMap<>();
@@ -2652,10 +2784,9 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
                 // Validate columnfamilies
                 List<ColumnFamilyStore> columnFamilyStores = new ArrayList<>();
-                String[] columnFamilies = options.getColumnFamilies().toArray(new String[options.getColumnFamilies().size()]);
                 try
                 {
-                    Iterables.addAll(columnFamilyStores, getValidColumnFamilies(false, false, keyspace, columnFamilies));
+                    Iterables.addAll(columnFamilyStores, validColumnFamilies);
                 }
                 catch (IllegalArgumentException e)
                 {
@@ -2756,12 +2887,23 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
                     private void repairComplete()
                     {
-                        String duration = DurationFormatUtils.formatDurationWords(System.currentTimeMillis() - startTime,
-                                                                                  true, true);
+                        String duration = DurationFormatUtils.formatDurationWords(System.currentTimeMillis() - startTime, true, true);
                         String message = String.format("Repair command #%d finished in %s", cmd, duration);
                         sendNotification("repair", message,
                                          new int[]{cmd, ActiveRepairService.Status.FINISHED.ordinal()});
                         logger.info(message);
+                        if (options.isTraced())
+                        {
+                            traceState.setNotificationHandle(null);
+                            // Because DebuggableThreadPoolExecutor#afterExecute and this callback
+                            // run in a nondeterministic order (within the same thread), the
+                            // TraceState may have been nulled out at this point. The TraceState
+                            // should be traceState, so just set it without bothering to check if it
+                            // actually was nulled out.
+                            Tracing.instance.set(traceState);
+                            Tracing.traceRepair(message);
+                            Tracing.instance.stopSession();
+                        }
                         executor.shutdownNow();
                     }
                 });
@@ -3145,7 +3287,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     private Future<StreamState> streamHints()
     {
         // StreamPlan will not fail if there are zero files to transfer, so flush anyway (need to get any in-memory hints, as well)
-        ColumnFamilyStore hintsCF = Keyspace.open(SystemKeyspace.NAME).getColumnFamilyStore(SystemKeyspace.HINTS_TABLE);
+        ColumnFamilyStore hintsCF = Keyspace.open(SystemKeyspace.NAME).getColumnFamilyStore(SystemKeyspace.HINTS);
         FBUtilities.waitOnFuture(hintsCF.forceFlush());
 
         // gather all live nodes in the cluster that aren't also leaving
@@ -3178,7 +3320,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                                                           preferred,
                                                           SystemKeyspace.NAME,
                                                           ranges,
-                                                          SystemKeyspace.HINTS_TABLE)
+                                                          SystemKeyspace.HINTS)
                                           .execute();
         }
     }
@@ -3543,6 +3685,11 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         return operationMode.toString();
     }
 
+    public boolean isStarting()
+    {
+        return operationMode == Mode.STARTING;
+    }
+
     public String getDrainProgress()
     {
         return String.format("Drained %s/%s ColumnFamilies", remainingCFs, totalCFs);
@@ -3762,6 +3909,12 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     public List<String> getKeyspaces()
     {
         List<String> keyspaceNamesList = new ArrayList<>(Schema.instance.getKeyspaces());
+        return Collections.unmodifiableList(keyspaceNamesList);
+    }
+
+    public List<String> getNonSystemKeyspaces()
+    {
+        List<String> keyspaceNamesList = new ArrayList<>(Schema.instance.getNonSystemKeyspaces());
         return Collections.unmodifiableList(keyspaceNamesList);
     }
 

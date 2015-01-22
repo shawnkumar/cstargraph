@@ -49,6 +49,7 @@ import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.CorruptSSTableException;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.format.Version;
+import org.apache.cassandra.io.sstable.format.SSTableWriter;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.io.util.Memory;
@@ -61,7 +62,6 @@ public class CompressionMetadata
 {
     public final long dataLength;
     public final long compressedFileLength;
-    public final boolean hasPostCompressionAdlerChecksums;
     private final Memory chunkOffsets;
     private final long chunkOffsetsSize;
     public final String indexFilePath;
@@ -81,14 +81,13 @@ public class CompressionMetadata
     public static CompressionMetadata create(String dataFilePath)
     {
         Descriptor desc = Descriptor.fromFilename(dataFilePath);
-        return new CompressionMetadata(desc.filenameFor(Component.COMPRESSION_INFO), new File(dataFilePath).length(), desc.version.hasPostCompressionAdlerChecksums());
+        return new CompressionMetadata(desc.filenameFor(Component.COMPRESSION_INFO), new File(dataFilePath).length());
     }
 
     @VisibleForTesting
-    CompressionMetadata(String indexFilePath, long compressedLength, boolean hasPostCompressionAdlerChecksums)
+    CompressionMetadata(String indexFilePath, long compressedLength)
     {
         this.indexFilePath = indexFilePath;
-        this.hasPostCompressionAdlerChecksums = hasPostCompressionAdlerChecksums;
 
         DataInputStream stream;
         try
@@ -136,13 +135,12 @@ public class CompressionMetadata
         this.chunkOffsetsSize = chunkOffsets.size();
     }
 
-    private CompressionMetadata(String filePath, CompressionParameters parameters, RefCountedMemory offsets, long offsetsSize, long dataLength, long compressedLength, boolean hasPostCompressionAdlerChecksums)
+    private CompressionMetadata(String filePath, CompressionParameters parameters, RefCountedMemory offsets, long offsetsSize, long dataLength, long compressedLength)
     {
         this.indexFilePath = filePath;
         this.parameters = parameters;
         this.dataLength = dataLength;
         this.compressedFileLength = compressedLength;
-        this.hasPostCompressionAdlerChecksums = hasPostCompressionAdlerChecksums;
         this.chunkOffsets = offsets;
         offsets.reference();
         this.chunkOffsetsSize = offsetsSize;
@@ -159,6 +157,15 @@ public class CompressionMetadata
     }
 
     /**
+     * Returns the amount of memory in bytes used off heap.
+     * @return the amount of memory in bytes used off heap
+     */
+    public long offHeapSize()
+    {
+        return chunkOffsets.size();
+    }
+
+    /**
      * Read offsets of the individual chunks from the given input.
      *
      * @param input Source of the data.
@@ -170,6 +177,9 @@ public class CompressionMetadata
         try
         {
             int chunkCount = input.readInt();
+            if (chunkCount <= 0)
+                throw new IOException("Compressed file with 0 chunks encountered: " + input);
+
             Memory offsets = Memory.allocate(chunkCount * 8);
 
             for (int i = 0; i < chunkCount; i++)
@@ -209,7 +219,7 @@ public class CompressionMetadata
             throw new CorruptSSTableException(new EOFException(), indexFilePath);
 
         long chunkOffset = chunkOffsets.getLong(idx);
-        long nextChunkOffset = (idx + 8 == chunkOffsets.size())
+        long nextChunkOffset = (idx + 8 == chunkOffsetsSize)
                                 ? compressedFileLength
                                 : chunkOffsets.getLong(idx + 8);
 
@@ -313,16 +323,23 @@ public class CompressionMetadata
             }
         }
 
-        public CompressionMetadata openEarly(long dataLength, long compressedLength)
+        public CompressionMetadata open(long dataLength, long compressedLength, SSTableWriter.FinishType finishType)
         {
-            return new CompressionMetadata(filePath, parameters, offsets, count * 8L, dataLength, compressedLength, latestVersion.hasPostCompressionAdlerChecksums());
-        }
-
-        public CompressionMetadata openAfterClose(long dataLength, long compressedLength)
-        {
-            RefCountedMemory newOffsets = offsets.copy(count * 8L);
-            offsets.unreference();
-            return new CompressionMetadata(filePath, parameters, newOffsets, count * 8L, dataLength, compressedLength, latestVersion.hasPostCompressionAdlerChecksums());
+            RefCountedMemory offsets;
+            switch (finishType)
+            {
+                case EARLY:
+                    offsets = this.offsets;
+                    break;
+                case NORMAL:
+                case FINISH_EARLY:
+                    offsets = this.offsets.copy(count * 8L);
+                    this.offsets.unreference();
+                    break;
+                default:
+                    throw new AssertionError();
+            }
+            return new CompressionMetadata(filePath, parameters, offsets, count * 8L, dataLength, compressedLength);
         }
 
         /**
@@ -356,12 +373,21 @@ public class CompressionMetadata
             	out = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(filePath)));
 	            assert chunks == count;
 	            writeHeader(out, dataLength, chunks);
-	            for (int i = 0 ; i < count ; i++)
-	                out.writeLong(offsets.getLong(i * 8));
+                for (int i = 0 ; i < count ; i++)
+                    out.writeLong(offsets.getLong(i * 8));
             }
             finally
             {
                 FileUtils.closeQuietly(out);
+            }
+        }
+
+        public void abort()
+        {
+            if (offsets != null)
+            {
+                offsets.unreference();
+                offsets = null;
             }
         }
     }
@@ -378,6 +404,8 @@ public class CompressionMetadata
 
         public Chunk(long offset, int length)
         {
+            assert(length > 0);
+
             this.offset = offset;
             this.length = length;
         }

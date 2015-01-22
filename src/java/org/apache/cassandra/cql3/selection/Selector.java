@@ -65,7 +65,7 @@ public abstract class Selector implements AssignmentTestable
          *
          * @return a new <code>Selector</code> instance
          */
-        public abstract Selector newInstance();
+        public abstract Selector newInstance() throws InvalidRequestException;
 
         /**
          * Checks if this factory creates selectors instances that creates aggregates.
@@ -120,18 +120,20 @@ public abstract class Selector implements AssignmentTestable
     /**
      * Add the current value from the specified <code>ResultSetBuilder</code>.
      *
+     * @param protocolVersion protocol version used for serialization
      * @param rs the <code>ResultSetBuilder</code>
      * @throws InvalidRequestException if a problem occurs while add the input value
      */
-    public abstract void addInput(ResultSetBuilder rs) throws InvalidRequestException;
+    public abstract void addInput(int protocolVersion, ResultSetBuilder rs) throws InvalidRequestException;
 
     /**
      * Returns the selector output.
      *
+     * @param protocolVersion protocol version used for serialization
      * @return the selector output
      * @throws InvalidRequestException if a problem occurs while computing the output value
      */
-    public abstract ByteBuffer getOutput() throws InvalidRequestException;
+    public abstract ByteBuffer getOutput(int protocolVersion) throws InvalidRequestException;
 
     /**
      * Returns the <code>Selector</code> output type.

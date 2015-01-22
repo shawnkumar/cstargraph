@@ -93,18 +93,14 @@ public class CompressionParameters
 
     public CompressionParameters copy()
     {
-        try
-        {
-            return new CompressionParameters(sstableCompressor, chunkLength, new HashMap<>(otherOptions));
-        }
-        catch (ConfigurationException e)
-        {
-            throw new AssertionError(e); // can't happen at this point.
-        }
+        return new CompressionParameters(sstableCompressor, chunkLength, new HashMap<>(otherOptions));
     }
 
     public void setLiveMetadata(final CFMetaData liveMetadata)
     {
+        if (liveMetadata == null)
+            return;
+
         assert this.liveMetadata == null || this.liveMetadata == liveMetadata;
         this.liveMetadata = liveMetadata;
     }
