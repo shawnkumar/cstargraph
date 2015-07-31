@@ -103,6 +103,11 @@ var drawGraph = function() {
        "mb"     : "gc MB"
     });
 
+    // This is where we should dea with data processing that's necessary
+
+
+
+
     var updateURLBar = function() {
         //Update the URL bar with the current parameters:
         window.history.replaceState(null,null,parseUri(location).path + "?" + $.param(query));
@@ -174,6 +179,31 @@ var drawGraph = function() {
     chart_controls_tbl.append('<tr><td style="padding-top:10px" colspan="100%">To hide/show a dataset click on the associated colored box</td></tr>');
 
     var raw_data;
+
+    function box(g){
+        g.each(function(boxdata, i){
+            var d = data[1].sort(d3.ascending)
+            var g = d3.select(this), n = d.length, min = d[0], max = d[n-1];
+
+            function quartiles(x) {
+                return[
+                    d3.quantile(d, 0.25),
+                    d3.quantile(d, 0.5),
+                    d3.quantile(d, 0.75)
+                ]
+            }
+
+            function boxWhiskers(x) {
+                return [0, d.length -1]
+            }
+
+            var quartileData = quartiles(d)
+            var whiskerInd = whiskers.call(this, d, i), whiskerData = whiskerInd.map(function(i) {return d[i];});
+
+            var outliers = whiskerInd ? d3.range(0, whiskerInd[0]).concat(d3.range(whiskerInd[1] +1, n)):d3.range(n);
+            
+        }
+    }
 
     //Callback to draw graph once we have json data.
     var graph_callback = function() {
