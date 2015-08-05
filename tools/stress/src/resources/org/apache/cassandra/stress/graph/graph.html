@@ -105,7 +105,8 @@ var drawGraph = function() {
        "sum_ms" : "gc sum (ms)",
        "sdv_ms" : "gc sdv (ms)",
        "mb"     : "gc MB",
-       "cum_ms" : "gc cumulative (ms)"
+       "cum_ms" : "gc cumulative (ms)",
+       "cum_mb" : "gc cumulative (mb)"
     });
 
 
@@ -196,23 +197,25 @@ var drawGraph = function() {
                     return d[stress_metrics.indexOf('interval_op_rate')] - d[stress_metrics.indexOf('interval_key_rate')];
                 } else if (metric == 'cum_ms') {
                 	return d[last_metric_index+1]
+                } else if (metric == 'cum_mb') {
+                	return d[last_metric_index+2]
                 }
             }        
         };
 
         var compute_cum_gs = function(rd) {
         	rd = $.extend({}, rd);
-        	var cum_current = 0;
+        	var cum_current_time = 0;
         	var new_intervals = [];
-        	console.log("rd")
-        	console.log(rd)
+        	var cum_current_mb = 0;
         	rd.intervals.forEach(function(i) {
-        		cum_current += i[stress_metrics.indexOf('sum_ms')];
-        		console.log(cum_current)
-        		i.push(cum_current);
-        		new_intervals.push(i);
-        		console.log(rd)
+        		cum_current_time += i[stress_metrics.indexOf('sum_ms')];
+        		cum_current_mb += i[stress_metrics.indexOf('mb')];
+        		i.push(cum_current_time);
+        		i.push(cum_current_mb);
+
         		console.log(i)
+        		new_intervals.push(i);
         	});
         	return new_intervals
 
