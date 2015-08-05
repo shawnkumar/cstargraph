@@ -79,8 +79,9 @@ var drawGraph = function() {
     ymin = query.ymin;
     ymax = query.ymax;
 
-    //Pull metrics from the stats json:
+    //Pull metrics from the stats json
     stress_metrics = $.extend([], stats['stats'][0]['metrics']);
+
     $.each(stress_metrics, function(i,v) {
         stress_metrics[i] = v.replace(/\W/g,"_");
     });
@@ -88,7 +89,10 @@ var drawGraph = function() {
     $.each(stress_metrics, function(i,v) {
         stress_metric_names[v] = stats['stats'][0]['metrics'][i];
     });
-    //Replace names of shorthand metric names with longer ones:
+
+    console.log(stress_metrics)
+    console.log(stress_metric_names)
+
     //Replace names of shorthand metric names with longer ones:
     $.extend(stress_metric_names, {
        "mean": "latency mean",
@@ -100,12 +104,9 @@ var drawGraph = function() {
        "max_ms" : "gc max (ms)",
        "sum_ms" : "gc sum (ms)",
        "sdv_ms" : "gc sdv (ms)",
-       "mb"     : "gc MB"
+       "mb"     : "gc MB",
+       "cum_ms" : "gc cumulative (ms)"
     });
-
-    // This is where we should dea with data processing that's necessary
-
-
 
 
     var updateURLBar = function() {
@@ -113,7 +114,7 @@ var drawGraph = function() {
         window.history.replaceState(null,null,parseUri(location).path + "?" + $.param(query));
     };
     
-    //Check query parameters:
+    //Check query parameters, set defaults if undefined: 
     if (metric == undefined) {
         metric = query.metric = 'op_s';
     }
@@ -131,6 +132,7 @@ var drawGraph = function() {
     updateURLBar();
 
     var metric_index = stress_metrics.indexOf(metric);
+    var last_metric_index = stress_metrics.length - 1;
     var time_index = stress_metrics.indexOf('time');
 
     /// Add dropdown controls to select chart criteria / options:
@@ -180,46 +182,60 @@ var drawGraph = function() {
 
     var raw_data;
 
-    function box(g){
-        g.each(function(boxdata, i){
-            var d = data[1].sort(d3.ascending)
-            var g = d3.select(this), n = d.length, min = d[0], max = d[n-1];
-
-            function quartiles(x) {
-                return[
-                    d3.quantile(d, 0.25),
-                    d3.quantile(d, 0.5),
-                    d3.quantile(d, 0.75)
-                ]
-            }
-
-            function boxWhiskers(x) {
-                return [0, d.length -1]
-            }
-
-            var quartileData = quartiles(d)
-            var whiskerInd = whiskers.call(this, d, i), whiskerData = whiskerInd.map(function(i) {return d[i];});
-
-            var outliers = whiskerInd ? d3.range(0, whiskerInd[0]).concat(d3.range(whiskerInd[1] +1, n)):d3.range(n);
-            
-        }
-    }
-
     //Callback to draw graph once we have json data.
     var graph_callback = function() {
+
+        //this is used to find the metric interval values
+        var getMetricValue = function(d) {
+            if (metric_index >= 0) {
+                //This is one of the metrics directly reported by stress:
+                return d[metric_index];
+            } else {
+                //This metric is not reported by stress, so compute it ourselves:
+                if (metric == 'num_timeouts') {
+                    return d[stress_metrics.indexOf('interval_op_rate')] - d[stress_metrics.indexOf('interval_key_rate')];
+                } else if (metric == 'cum_ms') {
+                	return d[last_metric_index+1]
+                }
+            }        
+        };
+
+        var compute_cum_gs = function(rd) {
+        	rd = $.extend({}, rd);
+        	var cum_current = 0;
+        	var new_intervals = [];
+        	console.log("rd")
+        	console.log(rd)
+        	rd.intervals.forEach(function(i) {
+        		cum_current += i[stress_metrics.indexOf('sum_ms')];
+        		console.log(cum_current)
+        		i.push(cum_current);
+        		new_intervals.push(i);
+        		console.log(rd)
+        		console.log(i)
+        	});
+        	return new_intervals
+
+        };
+
         var data = [];
         var trials = {};
         var data_by_title = {};
         //Keep track of what operations are availble from the test:
         var operations = {};
+        console.log(raw_data)
 
+        // this sets up our data variables above
         raw_data.stats.forEach(function(d) {
             // Make a copy of d so we never modify raw_data
             d = $.extend({}, d);
+
+            //this prevents code past this point from executing (for last empty element)
             operations[d.test] = true;
             if (d.test!=operation) {
                 return;
             }
+            d.intervals = compute_cum_gs(d)
             d.title = d['label'] != undefined ? d['label'] : d['revision'];
             data_by_title[d.title] = d;
             data.push(d);
@@ -245,17 +261,6 @@ var drawGraph = function() {
             operation_selector.append(option);
         });
 
-        var getMetricValue = function(d) {
-            if (metric_index >= 0) {
-                //This is one of the metrics directly reported by stress:
-                return d[metric_index];
-            } else {
-                //This metric is not reported by stress, so compute it ourselves:
-                if (metric == 'num_timeouts') {
-                    return d[stress_metrics.indexOf('interval_op_rate')] - d[stress_metrics.indexOf('interval_key_rate')];
-                }
-            }        
-        };
 
         //Parse the dates:
         data.forEach(function(d) {
@@ -349,6 +354,7 @@ var drawGraph = function() {
             .scale(y)
             .orient("left");
 
+        // note this is taking intervals
         var line = d3.svg.line()
             .interpolate("basis")
             .x(function(d) { 
@@ -442,7 +448,7 @@ var drawGraph = function() {
                 return d.title;
             });
 
-        // Draw benchmarked data:
+        // Here actually draw benchmarked data:
         trial.append("path")
             .attr("class", "line")
             .attr("clip-path", "url(#chart_clip)")
