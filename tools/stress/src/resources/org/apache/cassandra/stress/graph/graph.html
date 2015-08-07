@@ -95,7 +95,8 @@ var createGraph = function() {
     nonmetric_graphs = {
     	"cum_ms" : "gc cumulative (ms)",
         "cum_mb" : "gc cumulative (mb)",
-        "lat_imp" : "pecentage improvement ratio"
+        "lat_imp" : "pecentage improvement ratio",
+        "lat_all" : "all latencies",
        }
 
     $.extend(graph_names, {
@@ -189,12 +190,29 @@ var createGraph = function() {
     var drawGraph = function() {
 	    $("svg").remove();
 
+	    var compute_cum_gs = function(d) {
+        	d = $.extend({}, d);
+        	var cum_current_time = 0;
+        	var new_intervals = [];
+        	var cum_current_mb = 0;
+        	d.intervals.forEach(function(i) {
+        		cum_current_time += i[stress_metrics.indexOf('sum_ms')];
+        		cum_current_mb += i[stress_metrics.indexOf('mb')];
+        		i.push(cum_current_time);
+        		i.push(cum_current_mb);
+        		new_intervals.push(i);
+        	});
+        	return new_intervals
+
+        };
+
 	    // lets make a copy of graph_names (might have to edit)
 	    var names_graph = $.extend({}, graph_names)
 
     	var data = [];
         var trials = {};
         var data_by_title = {};
+        // a little tricky
         var operations = {};
 
         // this sets up our data variables above
@@ -240,38 +258,77 @@ var createGraph = function() {
         });
 
         // We should limit the graphs available here - ie iff 2 or more - add throughput percentage/latency normalised
-		multiple_revision_graphs = ['lat_imp'];
+		baseline_requiring_graphs = ['lat_imp'];
 		if (data.length < 2) {
-			multiple_revision_graphs.forEach(function(d) {
+			baseline_requiring_graphs.forEach(function(d) {
 				delete names_graph[d]
 			})
 		}
 
+		//takes one revisions dataset and metric name and returns a list of the interval values for the metric
+		var getMetricIntervals = function(metric, dataset) {
+			var metric_index = stress_metrics.indexOf(metric)
+			var metric_intervals = []
+			//go through the intervals grabbing the metric we want and put in one array
+			dataset.intervals.forEach(function(d) {
+				metric_intervals.push(d[metric_index])
+			});
+			return metric_intervals
+		}
+
+		var graph_data = []
 
 
-        //this is used to find the metric interval values
-        var getGraphData = function(graph) {
-            if (graph) {
-                //This is one of the metrics directly reported by stress:
-                return data;
-            }        
-        };
+		console.log(graph)
 
-        var compute_cum_gs = function(rd) {
-        	d = $.extend({}, d);
-        	var cum_current_time = 0;
-        	var new_intervals = [];
-        	var cum_current_mb = 0;
-        	d.intervals.forEach(function(i) {
-        		cum_current_time += i[stress_metrics.indexOf('sum_ms')];
-        		cum_current_mb += i[stress_metrics.indexOf('mb')];
-        		i.push(cum_current_time);
-        		i.push(cum_current_mb);
-        		new_intervals.push(i);
-        	});
-        	return new_intervals
+		// here is where we are going to handle most of the logic for processing the data
+		// this means a) calculating new metrics from existing data, b) formatting data into graph_data variable format
+		switch (graph) {
+			case 'lat_all':
+				data.forEach(function(d) {
+					// copy data
+					var d = $.extend({}, d);
 
-        };
+					var time_intervals = getMetricIntervals('time', d)
+					var intervals_999 = {label:'_999', data: getMetricIntervals('_999', d), time: time_intervals}
+					var intervals_99 = {label:'_99', data: getMetricIntervals('_99', d), time: time_intervals}
+					var intervals_95 = {label:'_95', data: getMetricIntervals('_95', d), time: time_intervals}
+
+					var combined_data = [];
+					combined_data.push(intervals_999);
+					combined_data.push(intervals_99);
+					combined_data.push(intervals_95);
+
+					var revision_data = {raw: d, intervals: combined_data};
+					graph_data.push(revision_data)
+				});
+				break;
+			//For now, we're gonna let default represent the simple graphs that only draw singular raw metrics
+			default:
+				data.forEach(function(d) {
+					var d = $.extend({}, d);
+					var metric_intervals = [getMetricIntervals(graph, d)]
+					var time_intervals = [getMetricIntervals('time', d)]
+					var revision_data = {raw: d, intervals: metric_intervals, time: time_intervals};
+					graph_data.push(revision_data)
+				});
+		}
+
+		console.log(graph_data)
+
+        //TODO if the graph selected is a baseline-requiring graph, we have to do add a baseline drop-down/default
+        if (baseline_requiring_graphs.indexOf(graph) >= 0){
+        	//process data
+        }
+
+        // Likely do not need this anymore - Primary method to get data for a particular line/plot
+        // var getGraphData = function(graph) {
+        //     if (graph) {
+        //         //This is one of the metrics directly reported by stress:
+        //         return data;
+        //     }        
+        // };
+
 
         //Setup chart:
         var margin = {top: 20, right: 1180, bottom: 4240, left: 60};
@@ -287,7 +344,7 @@ var createGraph = function() {
             .range([height, 0]);
 
         var color = d3.scale.category10();
-        color.domain(data.map(function(d){return d.title}));
+        color.domain(graph_data.map(function(d){return d.raw.title}));
 
         var xAxis = d3.svg.axis()
             .scale(x)
@@ -300,11 +357,11 @@ var createGraph = function() {
         // note this is taking intervals
         var line = d3.svg.line()
             .interpolate("basis")
-            .x(function(d) { 
-                return x(d[time_index]); //time in seconds
+            .x(function(d) {
+            	return x(d.time);
             })
-            .y(function(d) { 
-                return y(getMetricValue(d));
+            .y(function(d) {
+            	return y(d.data);
             });
         
         $("body").append("<div id='svg_container'>");
@@ -323,10 +380,10 @@ var createGraph = function() {
             $("#ymax").val(y.domain()[1]);
         }
 
-        var zoom = d3.behavior.zoom()
-            .x(x)
-            .y(y)
-            .on("zoom", redrawLines);
+        //var zoom = d3.behavior.zoom()
+        //    .x(x)
+        //    .y(y)
+        //    .on("zoom", redrawLines);
 
         var svg = d3.select("div#svg_container").append("svg")
             .attr("width", width + margin.left + margin.right + 250)
@@ -369,7 +426,7 @@ var createGraph = function() {
             .attr("y", height + 30 )
             .style("text-anchor", "middle")
             .style("font-size", "1.2em")
-            .text(stress_metric_names['time']);
+            .text("Time (s)");
 
         // y-axis
         svg.append("g")
@@ -381,25 +438,27 @@ var createGraph = function() {
             .attr("dy", ".91em")
             .style("font-size", "1.2em")
             .style("text-anchor", "end")
-            .text(stress_metric_names[metric]);
+            .text("test"); // TODO create map of graphs -> y-axis labels: ideally this is something like yaxisNames[graph]
 
         var trial = svg.selectAll(".trial")
-            .data(data)
+            .data(graph_data)
             .enter().append("g")
             .attr("class", "trial")
             .attr("title", function(d) {
-                return d.title;
-            });
-
-        // Here actually draw benchmarked data:
-        trial.append("path")
-            .attr("class", "line")
+                return d.raw.title;
+            })
+            .selectAll(".path")
+        	.data(function(d) {return d.intervals})
+        	.enter()
+        	.append("path")
+        	.attr("class", "line")
             .attr("clip-path", "url(#chart_clip)")
             .attr("d", function(d) {
-                return line(d.intervals);
+                return line(d);
             })
-            .style("stroke", function(d) { return color(d.title); });
-       
+            .style("stroke", function(d) { return color(d.label); });
+
+ 
         $("#dl-test-data").attr("href",stats_db);
 
         // Chart zoom/drag surface
@@ -411,9 +470,11 @@ var createGraph = function() {
     }
 
     raw_data = stats;
-    //if graph variable is not boxplot
+    //if graph requested is not a boxplot
     drawGraph()
-    // otherwise call drawBoxPlot
+    // otherwise call drawBoxPlot - TODO obviously
+
+    // move callbacks here - to allow switching between boxplots and rest
 
 }
 
@@ -471,11 +532,11 @@ svg {
   display: none;
 }
 
-.line {
+/*.line {
   fill: none;
   stroke: steelblue;
   stroke-width: 1.5px;
-}
+}*/
 
   </style>
 </head>
