@@ -391,11 +391,15 @@ var createGraph = function() {
         var height = 4700 - margin.top - margin.bottom;
 
 
-        // temporarily setting for debug (todo default)
+        // temporarily setting for debug (todo default zoom)
         var xmin = 0
         var ymin = 0
         var xmax = 50
         var ymax = 150
+        $("#xmin").val(xmin);
+        $("#xmax").val(xmax);
+        $("#ymin").val(ymin);
+        $("#ymax").val(ymax);
 
         var x = d3.scale.linear()
             .domain([xmin, xmax])
@@ -416,20 +420,13 @@ var createGraph = function() {
             .scale(y)
             .orient("left");
 
-        // note this is taking intervals
         var line = d3.svg.line()
             .interpolate("basis")
             .x(function(d, e) {
-            	// console.log('x')
-            	// console.log(d.time)
-            	// console.log(x(d.time))
             	return x(e);
             })
             .y(function(d, e) {
-            	// console.log('y')
-            	// console.log(d.data)
-            	// console.log(y(d.data))
-            	return x(d);
+            	return y(d);
             });
         
         $("body").append("<div id='svg_container'>");
@@ -448,10 +445,9 @@ var createGraph = function() {
             $("#ymax").val(y.domain()[1]);
         }
 
-        //var zoom = d3.behavior.zoom()
-        //    .x(x)
-        //    .y(y)
-        //    .on("zoom", redrawLines);
+        var zoom = d3.behavior.zoom()
+            .x(x)
+            .y(y)
 
         var svg = d3.select("div#svg_container").append("svg")
             .attr("width", width + margin.left + margin.right + 250)
@@ -522,6 +518,7 @@ var createGraph = function() {
         	.attr("class", "line")
             .attr("clip-path", "url(#chart_clip)")
             .attr("d", function(d) {
+
                 return line(d.data, d.time);
             })
             .style("stroke", function(d) { return color(d.label); });
@@ -600,11 +597,11 @@ svg {
   display: none;
 }
 
-/*.line {
+.line {
   fill: none;
   stroke: steelblue;
   stroke-width: 1.5px;
-}*/
+}
 
   </style>
 </head>
