@@ -321,19 +321,81 @@ var createGraph = function() {
         	//process data
         }
 
-        // Likely do not need this anymore - Primary method to get data for a particular line/plot
-        // var getGraphData = function(graph) {
-        //     if (graph) {
-        //         //This is one of the metrics directly reported by stress:
-        //         return data;
-        //     }        
-        // };
+
+        // TODO
+        // //Setup initial zoom level:
+        // defaultZoom = function(initialize) {
+        //     if (!initialize) {
+        //         //Reset zoom query params:
+        //         query.xmin = xmin = undefined;
+        //         query.xmax = xmax = undefined;
+        //         query.ymin = ymin = undefined;
+        //         query.ymax = ymax = undefined;
+        //     }
+        //     query.xmin = xmin = query.xmin ? query.xmin : 0;
+        //     query.xmax = xmax = query.xmax ? query.xmax : Math.round(d3.max(data, function(d) {
+        //         if (d.intervals.length > 0) {
+        //             return d.intervals[d.intervals.length-1][time_index];
+        //         }
+        //     }) * 1.1 * 100) / 100;
+        //     query.ymin = ymin = query.ymin ? query.ymin : 0;
+        //     query.ymax = ymax = query.ymax ? query.ymax : Math.round(d3.max(data, function(d) {
+        //         return d3.max(d.intervals, function(i) {
+        //             return getMetricValue(i);
+        //         });
+        //     }) * 1.1 * 100) / 100;
+        //     $("#xmin").val(xmin);
+        //     $("#xmax").val(xmax);
+        //     $("#ymin").val(ymin);
+        //     $("#ymax").val(ymax);
+        //     var updateX = function() {
+        //         query.xmin = xmin = $("#xmin").val();
+        //         query.xmax = xmax = $("#xmax").val();
+        //         x.domain([xmin,xmax]);
+        //         updateURLBar();
+        //     };
+        //     var updateY = function() {
+        //         query.ymin = ymin = $("#ymin").val();
+        //         query.ymax = ymax = $("#ymax").val();
+        //         y.domain([ymin, ymax]);
+        //         updateURLBar();
+        //     };
+        //     $("#xmin,#xmax").unbind().change(function(e) {
+        //         updateX();
+        //         redrawLines();
+        //     });
+        //     $("#ymin,#ymax").unbind().change(function(e) {
+        //         updateY();
+        //         redrawLines();
+        //     });
+        //     // The first time defaultZoom is called, we pass
+        //     // initialize=true, and we do not call the change() method
+        //     // yet. On subsequent calls, without initialize, we do.
+        //     if (!initialize) {
+        //         updateX();
+        //         updateY();
+        //         redrawLines();
+        //     }
+        // }
+        // defaultZoom(true);
+
+        // $("#reset_zoom").click(function(e) {
+        //     defaultZoom();
+        //     e.preventDefault();
+        // });
 
 
         //Setup chart:
         var margin = {top: 20, right: 1180, bottom: 4240, left: 60};
         var width = 2060 - margin.left - margin.right;
         var height = 4700 - margin.top - margin.bottom;
+
+
+        // temporarily setting for debug (todo default)
+        var xmin = 0
+        var ymin = 0
+        var xmax = 50
+        var ymax = 150
 
         var x = d3.scale.linear()
             .domain([xmin, xmax])
@@ -357,11 +419,17 @@ var createGraph = function() {
         // note this is taking intervals
         var line = d3.svg.line()
             .interpolate("basis")
-            .x(function(d) {
-            	return x(d.time);
+            .x(function(d, e) {
+            	// console.log('x')
+            	// console.log(d.time)
+            	// console.log(x(d.time))
+            	return x(e);
             })
-            .y(function(d) {
-            	return y(d.data);
+            .y(function(d, e) {
+            	// console.log('y')
+            	// console.log(d.data)
+            	// console.log(y(d.data))
+            	return x(d);
             });
         
         $("body").append("<div id='svg_container'>");
@@ -454,7 +522,7 @@ var createGraph = function() {
         	.attr("class", "line")
             .attr("clip-path", "url(#chart_clip)")
             .attr("d", function(d) {
-                return line(d);
+                return line(d.data, d.time);
             })
             .style("stroke", function(d) { return color(d.label); });
 
