@@ -78,6 +78,8 @@ var createGraph = function() {
     ymin = query.ymin;
     ymax = query.ymax;
 
+    baseline = query.baseline;
+
     //Pull metric names in order so to have a reference for indices
     stress_metrics = $.extend([], stats['stats'][0]['metrics']);
     $.each(stress_metrics, function(i,v) {
@@ -95,7 +97,7 @@ var createGraph = function() {
     nonmetric_graphs = {
     	"cum_ms" : "gc cumulative (ms)",
         "cum_mb" : "gc cumulative (mb)",
-        "lat_imp" : "pecentage improvement ratio",
+        "thr_imp" : "throughput % improvement",
         "lat_all" : "all latencies",
        }
 
@@ -158,6 +160,10 @@ var createGraph = function() {
     });
     chart_controls_tbl.append('<tr><td><label for="graph_selector"/>Choose graph:</label></td><td id="graph_selector_td"></td></tr>')
     $('#graph_selector_td').append(graph_selector);
+
+    var baseline_selector = $('<select id="baseline_selector"/>')
+    chart_controls_tbl.append('<tr id="bs"><td><label for="baseline_selector"/>Choose baseline:</label></td><td id="baseline_selector_td"></td></tr>')
+    $('#baseline_selector_td').append(baseline_selector);
 
     var operation_selector = $('<select id="operation_selector"/>')
     chart_controls_tbl.append('<tr><td><label for="operation_selector"/>Choose operation:</label></td><td id="operation_selector_td"></td></tr>')
@@ -257,13 +263,35 @@ var createGraph = function() {
             operation_selector.append(option);
         });
 
+
         // We should limit the graphs available here - ie iff 2 or more - add throughput percentage/latency normalised
-		baseline_requiring_graphs = ['lat_imp'];
-		if (data.length < 2) {
-			baseline_requiring_graphs.forEach(function(d) {
-				delete names_graph[d]
-			})
-		}
+		baseline_requiring_graphs = ['thr_imp'];
+
+		//set up baseline selector w/ default if an appropriate graph, else hide
+        if ($.inArray(graph, baseline_requiring_graphs)!=-1) {
+        	var baselines = []
+        	data.forEach(function(d) {
+        		baselines.push(d.title)
+        	})
+        	baseline_selector.children().remove();
+        	$.each(baselines, function(k) {
+                var option = $('<option/>').attr('value', k).text(k);
+                if (baseline == k) {
+                    option.attr('selected','selected');
+                }
+                baseline_selector.append(option);
+            });	
+        } else {
+        	$('#bs').hide();
+        }
+
+		// if (data.length < 2) {
+		// 	baseline_requiring_graphs.forEach(function(d) {
+		// 		delete names_graph[d]
+		// 	}) else {
+
+		// 	}
+		// }
 
 		//takes one revisions dataset and metric name and returns a list of the interval values for the metric
 		var getMetricIntervals = function(metric, dataset) {
@@ -278,6 +306,22 @@ var createGraph = function() {
 
 		var graph_data = []
 
+		/* takes two lists of interval data and a function f
+		trims the longer list and runs the function f on pair of elements
+		*/
+		var reduce = function(b, d, f) {
+			var max_length = b.length > d.length ? b.length : d.length
+			var output = []
+			for (var i=0; i<max_length; i++) {
+				output.push(f(b[i], d[i]))
+			}
+			return output;
+		}
+
+		//calculate the percentage improvement 
+		var percentImprovement = function(b, d) {
+			return (d-b) / (d >= b ? b : d);
+		}
 
 		console.log(graph)
 
@@ -303,24 +347,44 @@ var createGraph = function() {
 					graph_data.push(revision_data)
 				});
 				break;
+			case 'thr_imp': //throughput percentage improvement (over baseline)
+
+				var baseline_ops;
+				data.forEach(function(d) {
+					if (d.title==baseline){
+						baseline_ops = $.extend({}, getMetricIntervals('op_s', d))
+					}
+				})
+				console.log('baseline_ops')
+				console.log(baseline_ops)
+				data.forEach(function(d) {
+					if (d.title == baseline){
+						return; // skip loop if baseline set
+					}
+					var d = $.extend({}, d);
+
+					d_ops = getMetricIntervals('op_s', d)
+					percent_ops = reduce(baseline_ops, d_ops, percentImprovement)
+
+					var time_intervals = getMetricIntervals('time', d).splice(0, percent_ops.length);
+					
+					var combined_data = [];
+					combined_data.push({label: d.title, data: percent_ops, time: time_intervals});
+					var revision_data = {raw: d, intervals: combined_data};
+					graph_data.push(revision_data)
+				});
 			//For now, we're gonna let default represent the simple graphs that only draw singular raw metrics
 			default:
 				data.forEach(function(d) {
 					var d = $.extend({}, d);
-					var metric_intervals = [getMetricIntervals(graph, d)]
-					var time_intervals = [getMetricIntervals('time', d)]
-					var revision_data = {raw: d, intervals: metric_intervals, time: time_intervals};
-					graph_data.push(revision_data)
+					var time_intervals = getMetricIntervals('time', d);
+					var metric_intervals = [{label: graph, data: getMetricIntervals(graph, d), time: time_intervals}];
+					var revision_data = {raw: d, intervals: metric_intervals};
+					graph_data.push(revision_data);
 				});
 		}
 
 		console.log(graph_data)
-
-        //TODO if the graph selected is a baseline-requiring graph, we have to do add a baseline drop-down/default
-        if (baseline_requiring_graphs.indexOf(graph) >= 0){
-        	//process data
-        }
-
 
         // TODO
         // //Setup initial zoom level:
@@ -394,8 +458,8 @@ var createGraph = function() {
         // temporarily setting for debug (todo default zoom)
         var xmin = 0
         var ymin = 0
-        var xmax = 50
-        var ymax = 150
+        var xmax = 35
+        var ymax = 1000
         $("#xmin").val(xmin);
         $("#xmax").val(xmax);
         $("#ymin").val(ymin);
