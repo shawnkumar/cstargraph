@@ -193,10 +193,10 @@ var createGraph = function() {
     var raw_data;
 
     //Callback to draw normal non-boxplot graph
-    var drawGraph = function() {
+    var drawGraph = function(initial_zoom) {
 	    $("svg").remove();
 
-	    var compute_cum_gs = function(d) {
+		var compute_cum_gs = function(d) {
         	d = $.extend({}, d);
         	var cum_current_time = 0;
         	var new_intervals = [];
@@ -209,8 +209,8 @@ var createGraph = function() {
         		new_intervals.push(i);
         	});
         	return new_intervals
-
         };
+
 
 	    // lets make a copy of graph_names (might have to edit)
 	    var names_graph = $.extend({}, graph_names)
@@ -269,11 +269,16 @@ var createGraph = function() {
 
 		//set up baseline selector w/ default if an appropriate graph, else hide
         if ($.inArray(graph, baseline_requiring_graphs)!=-1) {
+        	$('#bs').show()
         	var baselines = []
         	data.forEach(function(d) {
         		baselines.push(d.title)
         	})
         	baseline_selector.children().remove();
+        	if (baseline == undefined) {
+        		baseline = baselines[0]
+        	}
+
         	$.each(baselines, function(k) {
                 var option = $('<option/>').attr('value', k).text(k);
                 if (baseline == k) {
@@ -285,13 +290,12 @@ var createGraph = function() {
         	$('#bs').hide();
         }
 
-		// if (data.length < 2) {
-		// 	baseline_requiring_graphs.forEach(function(d) {
-		// 		delete names_graph[d]
-		// 	}) else {
-
-		// 	}
-		// }
+        //edit possible graph choices if only 1 dataset
+		if (data.length < 2) {
+			baseline_requiring_graphs.forEach(function(d) {
+				delete names_graph[d]
+			});
+		}
 
 		//takes one revisions dataset and metric name and returns a list of the interval values for the metric
 		var getMetricIntervals = function(metric, dataset) {
@@ -304,14 +308,12 @@ var createGraph = function() {
 			return metric_intervals
 		}
 
-		var graph_data = []
-
 		/* takes two lists of interval data and a function f
 		trims the longer list and runs the function f on pair of elements
 		*/
 		var reduce = function(b, d, f) {
-			var max_length = b.length > d.length ? b.length : d.length
-			var output = []
+			var max_length = b.length > d.length ? b.length : d.length;
+			var output = [];
 			for (var i=0; i<max_length; i++) {
 				output.push(f(b[i], d[i]))
 			}
@@ -324,6 +326,7 @@ var createGraph = function() {
 		}
 
 		console.log(graph)
+		var graph_data = []
 
 		// here is where we are going to handle most of the logic for processing the data
 		// this means a) calculating new metrics from existing data, b) formatting data into graph_data variable format
@@ -386,84 +389,59 @@ var createGraph = function() {
 
 		console.log(graph_data)
 
-        // TODO
-        // //Setup initial zoom level:
-        // defaultZoom = function(initialize) {
-        //     if (!initialize) {
-        //         //Reset zoom query params:
-        //         query.xmin = xmin = undefined;
-        //         query.xmax = xmax = undefined;
-        //         query.ymin = ymin = undefined;
-        //         query.ymax = ymax = undefined;
-        //     }
-        //     query.xmin = xmin = query.xmin ? query.xmin : 0;
-        //     query.xmax = xmax = query.xmax ? query.xmax : Math.round(d3.max(data, function(d) {
-        //         if (d.intervals.length > 0) {
-        //             return d.intervals[d.intervals.length-1][time_index];
-        //         }
-        //     }) * 1.1 * 100) / 100;
-        //     query.ymin = ymin = query.ymin ? query.ymin : 0;
-        //     query.ymax = ymax = query.ymax ? query.ymax : Math.round(d3.max(data, function(d) {
-        //         return d3.max(d.intervals, function(i) {
-        //             return getMetricValue(i);
-        //         });
-        //     }) * 1.1 * 100) / 100;
-        //     $("#xmin").val(xmin);
-        //     $("#xmax").val(xmax);
-        //     $("#ymin").val(ymin);
-        //     $("#ymax").val(ymax);
-        //     var updateX = function() {
-        //         query.xmin = xmin = $("#xmin").val();
-        //         query.xmax = xmax = $("#xmax").val();
-        //         x.domain([xmin,xmax]);
-        //         updateURLBar();
-        //     };
-        //     var updateY = function() {
-        //         query.ymin = ymin = $("#ymin").val();
-        //         query.ymax = ymax = $("#ymax").val();
-        //         y.domain([ymin, ymax]);
-        //         updateURLBar();
-        //     };
-        //     $("#xmin,#xmax").unbind().change(function(e) {
-        //         updateX();
-        //         redrawLines();
-        //     });
-        //     $("#ymin,#ymax").unbind().change(function(e) {
-        //         updateY();
-        //         redrawLines();
-        //     });
-        //     // The first time defaultZoom is called, we pass
-        //     // initialize=true, and we do not call the change() method
-        //     // yet. On subsequent calls, without initialize, we do.
-        //     if (!initialize) {
-        //         updateX();
-        //         updateY();
-        //         redrawLines();
-        //     }
-        // }
-        // defaultZoom(true);
+        //Setup initial zoom level:
+        defaultZoom = function(initialize) {
+            if (initialize) {
+                //Reset zoom query params:
+                query.xmin = xmin = undefined;
+                query.xmax = xmax = undefined;
+                query.ymin = ymin = undefined;
+                query.ymax = ymax = undefined;
+            }
 
-        // $("#reset_zoom").click(function(e) {
-        //     defaultZoom();
-        //     e.preventDefault();
-        // });
+            //from graph data get the longest x-axis and the max and min y values
 
+            var x_max = 0;
+            var y_max = 0;
+            var y_min = 0;
+
+            // get raw max/mins from data
+            graph_data.forEach(function(d) {
+            	d.intervals.forEach(function (x){
+            		//get max time_interval
+            		x_max = x.time[x.time.length-1] > x_max ? x.time[x.time.length-1] : x_max;
+            		y_max = d3.max(x.data) > y_max ? d3.max(x.data) : y_max
+            		y_min = d3.min(x.data) < y_min ? d3.min(x.data) : y_min
+
+            	});
+            });
+
+            console.log(x_max)
+            console.log(y_max)
+            console.log(y_min)
+
+            query.xmin = xmin = query.xmin ? query.xmin : 0;
+            query.xmax = xmax = query.xmax ? query.xmax : Math.round(x_max * 1.1 * 100) / 100;
+            query.ymin = ymin = query.ymin ? query.ymin : Math.round(y_min * 1.1 * 100) / 100;
+            query.ymax = ymax = query.ymax ? query.ymax : Math.round(y_max * 1.1 * 100) / 100;
+
+            $("#xmin").val(xmin);
+            $("#xmax").val(xmax);
+            $("#ymin").val(ymin);
+            $("#ymax").val(ymax);
+        }
+        defaultZoom(initial_zoom);
+
+        $("#reset_zoom").click(function(e) {
+            defaultZoom(true);
+            e.preventDefault();
+        });
 
         //Setup chart:
         var margin = {top: 20, right: 1180, bottom: 4240, left: 60};
         var width = 2060 - margin.left - margin.right;
         var height = 4700 - margin.top - margin.bottom;
 
-
-        // temporarily setting for debug (todo default zoom)
-        var xmin = 0
-        var ymin = 0
-        var xmax = 35
-        var ymax = 1000
-        $("#xmin").val(xmin);
-        $("#xmax").val(xmax);
-        $("#ymin").val(ymin);
-        $("#ymax").val(ymax);
 
         var x = d3.scale.linear()
             .domain([xmin, xmax])
@@ -494,20 +472,6 @@ var createGraph = function() {
             });
         
         $("body").append("<div id='svg_container'>");
-
-        var redrawLines = function() {
-            svg.select(".x.axis").call(xAxis);
-            svg.select(".y.axis").call(yAxis);
-            svg.selectAll(".line")
-                .attr("class","line")
-                .attr("d", function(d) {
-                    return line(d.intervals);
-                })
-            $("#xmin").val(x.domain()[0]);
-            $("#xmax").val(x.domain()[1]);
-            $("#ymin").val(y.domain()[0]);
-            $("#ymax").val(y.domain()[1]);
-        }
 
         var zoom = d3.behavior.zoom()
             .x(x)
@@ -600,10 +564,59 @@ var createGraph = function() {
 
     raw_data = stats;
     //if graph requested is not a boxplot
-    drawGraph()
+    var processGraphs = function (d) {
+    	drawGraph(d);
+    }
     // otherwise call drawBoxPlot - TODO obviously
 
+    processGraphs(true);
     // move callbacks here - to allow switching between boxplots and rest
+    graph_selector.unbind().change(function(e) {
+            // change the metric in the url to reload the page:
+       	graph = query.graph = this.value;
+       	updateURLBar();
+        processGraphs(true);
+
+    });
+    operation_selector.unbind().change(function(e) {
+            // change the metric in the url to reload the page:
+        operation = query.operation = this.value;
+        updateURLBar();
+        processGraphs(true);
+    });
+
+    baseline_selector.unbind().change(function(e) {
+            // change the metric in the url to reload the page:
+        baseline = query.baseline = this.value;
+        updateURLBar();
+        processGraphs(true);
+    });
+    smoothing_selector.unbind().change(function(e) {
+            // change the metric in the url to reload the page:
+        smoothing = query.smoothing = this.value;
+        updateURLBar();
+        processGraphs(false);
+    });
+    show_aggregates_checkbox.unbind().change(function(e) {
+        show_aggregates = query.show_aggregates = this.checked;
+        updateURLBar();
+        processGraphs(false);
+    });
+
+    $("#xmin,#xmax").unbind().change(function(e) {
+        query.xmin = xmin = $("#xmin").val();
+        query.xmax = xmax = $("#xmax").val();
+        updateURLBar();
+        processGraphs(false);
+    });
+    $("#ymin,#ymax").unbind().change(function(e) {
+        query.ymin = ymin = $("#ymin").val();
+        query.ymax = ymax = $("#ymax").val();
+        updateURLBar();
+        processGraphs(false);
+    });
+
+    updateURLBar();
 
 }
 
