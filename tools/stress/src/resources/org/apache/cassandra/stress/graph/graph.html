@@ -217,14 +217,13 @@ var createGraph = function() {
 
     	var data = [];
         var trials = {};
-        var data_by_title = {};
-        // a little tricky
         var operations = {};
 
         // this sets up our data variables above
         raw_data.stats.forEach(function(d) {
             // Make a copy of d so we never modify raw_data
             d = $.extend({}, d);
+            console.log(d)
 
             //this prevents code past this point from executing (for last empty element)
             operations[d.test] = true;
@@ -235,7 +234,6 @@ var createGraph = function() {
             d.intervals = compute_cum_gs(d)
             
             d.title = d['label'] != undefined ? d['label'] : d['revision'];
-            data_by_title[d.title] = d;
             data.push(d);
 
             //Carry out smoothing here
@@ -278,8 +276,7 @@ var createGraph = function() {
         	if (baseline == undefined) {
         		baseline = baselines[0]
         	}
-
-        	$.each(baselines, function(k) {
+        	baselines.forEach(function(k) {
                 var option = $('<option/>').attr('value', k).text(k);
                 if (baseline == k) {
                     option.attr('selected','selected');
@@ -309,7 +306,7 @@ var createGraph = function() {
 		}
 
 		/* takes two lists of interval data and a function f
-		trims the longer list and runs the function f on pair of elements
+		trims the longer list and runs the function f on pair of adjacent elements
 		*/
 		var reduce = function(b, d, f) {
 			var max_length = b.length > d.length ? b.length : d.length;
@@ -325,7 +322,6 @@ var createGraph = function() {
 			return (d-b) / (d >= b ? b : d);
 		}
 
-		console.log(graph)
 		var graph_data = []
 
 		// here is where we are going to handle most of the logic for processing the data
@@ -337,9 +333,9 @@ var createGraph = function() {
 					var d = $.extend({}, d);
 
 					var time_intervals = getMetricIntervals('time', d)
-					var intervals_999 = {label:'_999', data: getMetricIntervals('_999', d), time: time_intervals}
-					var intervals_99 = {label:'_99', data: getMetricIntervals('_99', d), time: time_intervals}
-					var intervals_95 = {label:'_95', data: getMetricIntervals('_95', d), time: time_intervals}
+					var intervals_999 = {label:'_999', data: getMetricIntervals('_999', d), time: time_intervals, revision: d.revision};
+					var intervals_99 = {label:'_99', data: getMetricIntervals('_99', d), time: time_intervals, revision: d.revision};
+					var intervals_95 = {label:'_95', data: getMetricIntervals('_95', d), time: time_intervals, revision: d.revision};
 
 					var combined_data = [];
 					combined_data.push(intervals_999);
@@ -351,15 +347,13 @@ var createGraph = function() {
 				});
 				break;
 			case 'thr_imp': //throughput percentage improvement (over baseline)
-
 				var baseline_ops;
 				data.forEach(function(d) {
 					if (d.title==baseline){
 						baseline_ops = $.extend({}, getMetricIntervals('op_s', d))
 					}
 				})
-				console.log('baseline_ops')
-				console.log(baseline_ops)
+
 				data.forEach(function(d) {
 					if (d.title == baseline){
 						return; // skip loop if baseline set
@@ -416,9 +410,6 @@ var createGraph = function() {
             	});
             });
 
-            console.log(x_max)
-            console.log(y_max)
-            console.log(y_min)
 
             query.xmin = xmin = query.xmin ? query.xmin : 0;
             query.xmax = xmax = query.xmax ? query.xmax : Math.round(x_max * 1.1 * 100) / 100;
@@ -442,7 +433,6 @@ var createGraph = function() {
         var width = 2060 - margin.left - margin.right;
         var height = 4700 - margin.top - margin.bottom;
 
-
         var x = d3.scale.linear()
             .domain([xmin, xmax])
             .range([0, width]);
@@ -452,7 +442,7 @@ var createGraph = function() {
             .range([height, 0]);
 
         var color = d3.scale.category10();
-        color.domain(graph_data.map(function(d){return d.raw.title}));
+        color.domain(graph_data.map(function(d){return d.raw.revision}));
 
         var xAxis = d3.svg.axis()
             .scale(x)
@@ -464,11 +454,11 @@ var createGraph = function() {
 
         var line = d3.svg.line()
             .interpolate("basis")
-            .x(function(d, e) {
-            	return x(e);
+            .x(function(time, data) {
+            	return x(time);
             })
-            .y(function(d, e) {
-            	return y(d);
+            .y(function(time, data) {
+            	return y(data);
             });
         
         $("body").append("<div id='svg_container'>");
@@ -536,22 +526,151 @@ var createGraph = function() {
             .data(graph_data)
             .enter().append("g")
             .attr("class", "trial")
-            .attr("title", function(d) {
-                return d.raw.title;
+            .attr("revision", function(d) {
+                return d.raw.revision;
             })
             .selectAll(".path")
         	.data(function(d) {return d.intervals})
         	.enter()
         	.append("path")
+        	.attr("label", function(d) {
+        		return d.label
+        	})
         	.attr("class", "line")
             .attr("clip-path", "url(#chart_clip)")
             .attr("d", function(d) {
-
-                return line(d.data, d.time);
+                return line(d.time, d.data);
             })
-            .style("stroke", function(d) { return color(d.label); });
+            .style("stroke", function(d) {return color(d.revision)});
 
- 
+        var legend = svg.selectAll(".legend")
+            .data(graph_data)
+            .enter().append("g")
+            .attr("class", "legend")
+            .attr("transform", function(d, i) {
+                if (show_aggregates == true) {
+                    var y_offset = 425 + (i*240) + 70;
+                } else {
+                    var y_offset = 425 + (i*25) + 70;
+                }
+                var x_offset = -550;
+                return "translate(" + x_offset + "," + y_offset + ")"; 
+            });
+
+        var renderLegendText = function(linenum, getTextCallback) {
+            legend.append("text")
+                .attr("x", width - 24 - 250)
+                .attr("y", 12*linenum)
+                .attr("dy", ".35em")
+                .style("font-family", "monospace")
+                .style("font-size", "1.2em")
+                .style("text-anchor", "start")
+                .text(function(d) { 
+                    return getTextCallback(d);
+                });
+        };
+
+        var padTextEnd = function(text, length) {
+            for(var x=text.length; x<length; x++) {
+                text = text + '\u00A0';
+            }
+            return text;
+        };
+        var padTextStart = function(text, length) {
+            for(var x=text.length; x<length; x++) {
+                text = '\u00A0' + text;
+            }
+            return text;
+        };
+
+        renderLegendText(1, function(d) {
+            return padTextStart(d.raw.revision, d.raw.revision.length + 5);
+        });
+
+        if (show_aggregates === true) {
+            renderLegendText(2, function(d) {
+                return '---------------------------------------';
+            });
+            renderLegendText(3, function(d) {
+                return padTextEnd('op rate', 26) + " : " + d.raw['op rate'];
+            });
+
+            renderLegendText(4, function(d) {
+                return padTextEnd('partition rate', 26) + " : " + d.raw['partition rate'];
+            });
+
+            renderLegendText(5, function(d) {
+                return padTextEnd('row rate', 26) + ' : ' + d.raw['row rate'];
+            });
+
+            renderLegendText(6, function(d) {
+                return padTextEnd('latency mean', 26) + ' : ' + d.raw['latency mean'];
+            });
+
+            renderLegendText(7, function(d) {
+                return padTextEnd('latency median', 26) + ' : ' + d.raw['latency median'];
+            });
+
+            renderLegendText(8, function(d) {
+                return padTextEnd('latency 95th percentile', 26) + ' : ' + d.raw['latency 95th percentile'];
+            });
+
+            renderLegendText(9, function(d) {
+                return padTextEnd('latency 99th percentile', 26) + ' : ' + d.raw['latency 99th percentile'];
+            });
+
+            renderLegendText(10, function(d) {
+                return padTextEnd('latency 99.9th percentile', 26) + ' : ' + d.raw['latency 99.9th percentile'];
+            });
+
+            renderLegendText(11, function(d) {
+                return padTextEnd('latency max', 26) + ' : ' + d.raw['latency max'];
+            });
+
+            renderLegendText(12, function(d) {
+                return padTextEnd('total gc count', 26) + ' : ' + d.raw['total gc count'];
+            });
+
+            renderLegendText(13, function(d) {
+                return padTextEnd('total gc mb', 26) + ' : ' + d.raw['total gc mb'];
+            });
+
+            renderLegendText(14, function(d) {
+                return padTextEnd('total gc time (s)', 26) + ' : ' + d.raw['total gc time (s)'];
+            });
+
+            renderLegendText(15, function(d) {
+                return padTextEnd('avg gc time(ms)', 26) + ' : ' + d.raw['avg gc time(ms)'];
+            });
+
+            renderLegendText(16, function(d) {
+                return padTextEnd('stdev gc time(ms)', 26) + ' : ' + d.raw['stdev gc time(ms)'];
+            });
+
+            renderLegendText(17, function(d) {
+                return padTextEnd('Total operation time', 26) + ' : ' + d.raw['Total operation time'];
+            });
+
+            renderLegendText(18, function(d) {
+                var cmd = d.raw['command'];
+                return 'cmd: ' + cmd;
+            });
+        }
+        legend.append("rect")
+            .attr("x", width - 270)
+            .attr("width", 18)
+            .attr("height", 18)
+            .attr("class", "legend-rect")
+            .attr("title", function(d) {
+                return d.raw.title;
+            })
+            .style("fill", function(d) {return color(d.raw.revision)});
+
+        //Make trials hideable by double clicking on the colored legend box
+        $("rect.legend-rect").click(function() {
+            $("g.trial[title='" + $(this).attr('title') + "']").toggle();
+        });
+
         $("#dl-test-data").attr("href",stats_db);
 
         // Chart zoom/drag surface
@@ -560,8 +679,8 @@ var createGraph = function() {
             .attr("id", "zoom_drag_surface")
             .attr("width", width)
             .attr("height", height);
-    }
-
+    
+}
     raw_data = stats;
     //if graph requested is not a boxplot
     var processGraphs = function (d) {
