@@ -399,6 +399,7 @@ var createGraph = function() {
             var y_max = 0;
             var y_min = 0;
 
+
             // get raw max/mins from data
             graph_data.forEach(function(d) {
             	d.intervals.forEach(function (x){
@@ -409,6 +410,10 @@ var createGraph = function() {
 
             	});
             });
+
+            console.log(x_max)
+            console.log(y_max)
+            console.log(y_min)
 
 
             query.xmin = xmin = query.xmin ? query.xmin : 0;
