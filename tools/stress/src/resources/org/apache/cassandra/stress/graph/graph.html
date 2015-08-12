@@ -223,7 +223,6 @@ var createGraph = function() {
         raw_data.stats.forEach(function(d) {
             // Make a copy of d so we never modify raw_data
             d = $.extend({}, d);
-            console.log(d)
 
             //this prevents code past this point from executing (for last empty element)
             operations[d.test] = true;
@@ -309,10 +308,10 @@ var createGraph = function() {
 		trims the longer list and runs the function f on pair of adjacent elements
 		*/
 		var reduce = function(b, d, f) {
-			var max_length = b.length > d.length ? b.length : d.length;
+			var min_length = b.length < d.length ? b.length : d.length;
 			var output = [];
-			for (var i=0; i<max_length; i++) {
-				output.push(f(b[i], d[i]))
+			for (var i=0; i<min_length; i++) {
+				output.push(f(b[i], d[i]));
 			}
 			return output;
 		}
@@ -322,7 +321,7 @@ var createGraph = function() {
 			return (d-b) / (d >= b ? b : d);
 		}
 
-		var graph_data = []
+		var graph_data = [];
 
 		// here is where we are going to handle most of the logic for processing the data
 		// this means a) calculating new metrics from existing data, b) formatting data into graph_data variable format
@@ -347,10 +346,10 @@ var createGraph = function() {
 				});
 				break;
 			case 'thr_imp': //throughput percentage improvement (over baseline)
-				var baseline_ops;
+				var baseline_ops = [];
 				data.forEach(function(d) {
 					if (d.title==baseline){
-						baseline_ops = $.extend({}, getMetricIntervals('op_s', d))
+						baseline_ops = getMetricIntervals('op_s', d)
 					}
 				})
 
@@ -362,7 +361,6 @@ var createGraph = function() {
 
 					d_ops = getMetricIntervals('op_s', d)
 					percent_ops = reduce(baseline_ops, d_ops, percentImprovement)
-
 					var time_intervals = getMetricIntervals('time', d).splice(0, percent_ops.length);
 					
 					var combined_data = [];
@@ -370,6 +368,7 @@ var createGraph = function() {
 					var revision_data = {raw: d, intervals: combined_data};
 					graph_data.push(revision_data)
 				});
+				break;
 			//For now, we're gonna let default represent the simple graphs that only draw singular raw metrics
 			default:
 				data.forEach(function(d) {
@@ -394,11 +393,9 @@ var createGraph = function() {
             }
 
             //from graph data get the longest x-axis and the max and min y values
-
             var x_max = 0;
             var y_max = 0;
             var y_min = 0;
-
 
             // get raw max/mins from data
             graph_data.forEach(function(d) {
@@ -411,20 +408,16 @@ var createGraph = function() {
             	});
             });
 
-            console.log(x_max)
-            console.log(y_max)
-            console.log(y_min)
-
-
             query.xmin = xmin = query.xmin ? query.xmin : 0;
-            query.xmax = xmax = query.xmax ? query.xmax : Math.round(x_max * 1.1 * 100) / 100;
-            query.ymin = ymin = query.ymin ? query.ymin : Math.round(y_min * 1.1 * 100) / 100;
-            query.ymax = ymax = query.ymax ? query.ymax : Math.round(y_max * 1.1 * 100) / 100;
+            query.xmax = xmax = query.xmax ? query.xmax : Math.round(x_max * 1.1);
+            query.ymin = ymin = query.ymin ? query.ymin : Math.round(y_min * 1.1);
+            query.ymax = ymax = query.ymax ? query.ymax : Math.round(y_max * 1.1);
 
             $("#xmin").val(xmin);
             $("#xmax").val(xmax);
             $("#ymin").val(ymin);
             $("#ymax").val(ymax);
+
         }
         defaultZoom(initial_zoom);
 
@@ -437,6 +430,8 @@ var createGraph = function() {
         var margin = {top: 20, right: 1180, bottom: 4240, left: 60};
         var width = 2060 - margin.left - margin.right;
         var height = 4700 - margin.top - margin.bottom;
+
+        console.log(xmax)
 
         var x = d3.scale.linear()
             .domain([xmin, xmax])
@@ -459,11 +454,11 @@ var createGraph = function() {
 
         var line = d3.svg.line()
             .interpolate("basis")
-            .x(function(time, data) {
-            	return x(time);
+            .x(function(d, e) {
+            	return x(e);
             })
-            .y(function(time, data) {
-            	return y(data);
+            .y(function(d, e) {
+            	return y(d);
             });
         
         $("body").append("<div id='svg_container'>");
@@ -471,6 +466,7 @@ var createGraph = function() {
         var zoom = d3.behavior.zoom()
             .x(x)
             .y(y)
+
 
         var svg = d3.select("div#svg_container").append("svg")
             .attr("width", width + margin.left + margin.right + 250)
@@ -539,12 +535,12 @@ var createGraph = function() {
         	.enter()
         	.append("path")
         	.attr("label", function(d) {
-        		return d.label
+        		return d.label;
         	})
         	.attr("class", "line")
             .attr("clip-path", "url(#chart_clip)")
             .attr("d", function(d) {
-                return line(d.time, d.data);
+                return line(d.data, d.time);
             })
             .style("stroke", function(d) {return color(d.revision)});
 
