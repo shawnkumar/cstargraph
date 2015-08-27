@@ -789,19 +789,24 @@ var createGraph = function() {
         			var d = $.extend({}, d);
 
         			var rev = d.revision;
+					var time_interval = getMetricIntervals('time', d)
+
 
         			//get metric data for each latency percentile
-        			var int_999 = {metric: "99.9th Percentile", interval: getMetricIntervals('_999', d)};
-					var int_99 = {metric: "99th Percentile", interval: getMetricIntervals('_99', d)};
-					var int_95 = {metric: "95th Percentile", interval: getMetricIntervals('_95', d)};
+        			var int_999 = {metric: "99.9th " + rev, interval: getMetricIntervals('_999', d)};
+					var int_99 = {metric: "99th " + rev, interval: getMetricIntervals('_99', d)};
+					var int_95 = {metric: "95th " + rev, interval: getMetricIntervals('_95', d)};
         			
 
         			//need to create object with {"metric": metric, "value": metric point, "revision": revision} 
 					[int_999, int_99, int_95].forEach(function(p) {
-						p.interval.forEach(function(i) {
-							var point = {metric: p.metric, value: i, revision: rev};
+						var i;
+						for(i=0; i < p.interval.length; i++){
+							var val = p.interval[i];
+							var time_val = time_interval[i];
+							var point = {metric: p.metric, time: time_val, value: val};
 							box_data.push(point);
-						});
+						};
 					});
         		})
         	break;
@@ -900,8 +905,8 @@ var createGraph = function() {
 		var boxplot = d3plus.viz()
 		.container('#svg_container') // add id of container
 		.data(box_data) //
-		.type("box") 
-		.id("revision")
+		.type("box")
+		.id(["value"])
 		.x("metric")
 		.y("value")
 		.ui([{ 
